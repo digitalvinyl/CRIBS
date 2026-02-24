@@ -1,4 +1,4 @@
-import { useState, useMemo, useRef, useEffect } from "react";
+import React, { useState, useMemo, useRef, useEffect } from "react";
 
 /* ─── Helpers ────────────────────────────────────────────────────── */
 const fmt = (n) => (n != null && !isNaN(n) ? "$" + Number(n).toLocaleString("en-US", { maximumFractionDigits: 0 }) : "—");
@@ -3046,26 +3046,24 @@ export default function CribsApp() {
     <div className={`min-h-screen bg-stone-50 text-stone-800 pb-20 md:pb-0 overflow-x-hidden ${darkMode ? "dark" : ""}`} style={{ fontFamily: "'DM Sans', 'Inter', system-ui, -apple-system, sans-serif" }}>
       <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&display=swap" rel="stylesheet" />
 
-      {/* Desktop top nav — hidden on detail screen */}
-      {screen !== "detail" && (
-        <header className="hidden md:block border-b border-stone-200 bg-white/90 backdrop-blur-md sticky top-0 z-40 shadow-sm">
-          <div className="max-w-6xl mx-auto px-6 py-3 flex items-center justify-between">
-            <div className="flex items-center gap-2.5">
-              <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-violet-500 via-fuchsia-500 to-pink-500 flex items-center justify-center shadow-lg shadow-fuchsia-200/50">
-                <svg className="w-5 h-5" viewBox="0 0 24 24" fill="white"><path d="M12 3L2 12h3v8h5v-5h4v5h5v-8h3L12 3z"/></svg>
-              </div>
-              <h1 className="text-lg font-bold tracking-tight text-stone-800">CRIBS</h1>
+      {/* Desktop top nav — always visible */}
+      <header className="hidden md:block border-b border-stone-200 bg-white/90 backdrop-blur-md sticky top-0 z-40 shadow-sm">
+        <div className="max-w-6xl mx-auto px-6 py-3 flex items-center justify-between">
+          <div className="flex items-center gap-2.5">
+            <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-violet-500 via-fuchsia-500 to-pink-500 flex items-center justify-center shadow-lg shadow-fuchsia-200/50">
+              <svg className="w-5 h-5" viewBox="0 0 24 24" fill="white"><path d="M12 3L2 12h3v8h5v-5h4v5h5v-8h3L12 3z"/></svg>
             </div>
-            <nav className="flex gap-1 bg-stone-100 rounded-lg p-0.5 border border-stone-200">
-              <button onClick={goList} className={`px-4 py-2 text-sm font-medium rounded-md transition-colors ${screen === "list" ? "bg-white text-sky-600 shadow-sm" : "text-stone-500 hover:text-stone-700"}`}>Homes</button>
-              <button onClick={() => setScreen("compare")} className={`px-4 py-2 text-sm font-medium rounded-md transition-colors ${screen === "compare" ? "bg-white text-sky-600 shadow-sm" : "text-stone-500 hover:text-stone-700"}`}>
-                Compare {compareList.length > 0 && <span className="ml-1 bg-violet-100 text-violet-600 text-xs px-1.5 py-0.5 rounded-full font-semibold">{compareList.length}</span>}
-              </button>
-              <button onClick={() => setScreen("settings")} className={`px-4 py-2 text-sm font-medium rounded-md transition-colors ${screen === "settings" ? "bg-white text-sky-600 shadow-sm" : "text-stone-500 hover:text-stone-700"}`}>Settings</button>
-            </nav>
+            <h1 className="text-lg font-bold tracking-tight text-stone-800">CRIBS</h1>
           </div>
-        </header>
-      )}
+          <nav className="flex gap-1 bg-stone-100 rounded-lg p-0.5 border border-stone-200">
+            <button onClick={goList} className={`px-4 py-2 text-sm font-medium rounded-md transition-colors ${screen === "list" || screen === "detail" ? "bg-white text-sky-600 shadow-sm" : "text-stone-500 hover:text-stone-700"}`}>Homes</button>
+            <button onClick={() => setScreen("compare")} className={`px-4 py-2 text-sm font-medium rounded-md transition-colors ${screen === "compare" ? "bg-white text-sky-600 shadow-sm" : "text-stone-500 hover:text-stone-700"}`}>
+              Compare {compareList.length > 0 && <span className="ml-1 bg-violet-100 text-violet-600 text-xs px-1.5 py-0.5 rounded-full font-semibold">{compareList.length}</span>}
+            </button>
+            <button onClick={() => setScreen("settings")} className={`px-4 py-2 text-sm font-medium rounded-md transition-colors ${screen === "settings" ? "bg-white text-sky-600 shadow-sm" : "text-stone-500 hover:text-stone-700"}`}>Settings</button>
+          </nav>
+        </div>
+      </header>
 
       <div className="max-w-6xl mx-auto">
         {screen === "list" && <HomeListScreen homes={homes} setHomes={setHomes} onOpenHome={openHome} compareList={compareList} toggleCompare={toggleCompare} onImport={handleImport} fin={fin} rateInfo={rateInfo} schoolFilter={schoolFilter} setSchoolFilter={setSchoolFilter} />}
