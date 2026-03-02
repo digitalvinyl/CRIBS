@@ -118,6 +118,40 @@ function quickMonthly(price, cashBudget = 750000, hoaMonthly = 0, rateAnnual = 6
 
 const DEFAULT_RATE = 6.0;
 
+/* Calculate maximum affordable home price from income/debts */
+function calcMaxBudget(fin) {
+  if (!fin.grossIncome || fin.grossIncome <= 0) return null;
+  const maxMonthlyHousing = (fin.grossIncome / 12) * ((fin.dtiLimit || 36) / 100) - (fin.monthlyDebts || 0);
+  if (maxMonthlyHousing <= 0) return null;
+  const r = (fin.rate || 6) / 100 / 12, n = (fin.term || 30) * 12;
+  const piFactor = r > 0 ? (r * Math.pow(1 + r, n)) / (Math.pow(1 + r, n) - 1) : 1 / n;
+  const taxMonthlyFactor = (fin.propTax || 1.8) / 100 / 12;
+  const estInsMonthly = 350; // rough avg insurance estimate
+  const closingPct = (fin.closing || 2.5) / 100;
+  const cashForDown = Math.max(0, fin.cash - 0); // will iterate
+  // Solve: price * (piFactor*(1-closingPct) + taxMonthlyFactor) + estInsMonthly = maxMonthlyHousing + cashForDown * piFactor
+  // price*(piFactor - piFactor*downRatio + taxMonthlyFactor) = maxMonthlyHousing - estInsMonthly + down*piFactor
+  // Iterative: start with down = cash * 0.8, solve for price, adjust
+  let price = 0;
+  for (let i = 0; i < 5; i++) {
+    const closing = price * closingPct;
+    const down = Math.max(0, Math.min(fin.cash - closing, price));
+    const loan = price - down;
+    const pi = loan * piFactor;
+    const tax = price * taxMonthlyFactor;
+    const total = pi + tax + estInsMonthly;
+    const diff = maxMonthlyHousing - total;
+    if (i === 0) {
+      // Initial estimate
+      price = (maxMonthlyHousing - estInsMonthly + fin.cash * piFactor) / (piFactor + taxMonthlyFactor);
+    } else {
+      price += diff / (piFactor + taxMonthlyFactor);
+    }
+    if (price < 0) { price = 0; break; }
+  }
+  return { maxPrice: Math.round(price), maxMonthly: Math.round(maxMonthlyHousing) };
+}
+
 async function fetchLiveRate() {
   try {
     const res = await fetch("https://api.anthropic.com/v1/messages", {
@@ -463,7 +497,7 @@ function DropZone({ onImport, compact }) {
 /* ═══════════════════════════════════════════════════════════════════
    SCREEN: Home List
    ═══════════════════════════════════════════════════════════════════ */
-function HomeListScreen({ homes, setHomes, onOpenHome, compareList, toggleCompare, onImport, fin, rateInfo, schoolFilter, setSchoolFilter }) {
+function HomeListScreen({ homes, setHomes, onOpenHome, compareList, toggleCompare, onImport, fin, rateInfo, schoolFilter, setSchoolFilter, maxBudget }) {
   const [filter, setFilter] = useState("");
   const [viewedFilter, setViewedFilter] = useState("all");
   const [sortKey, setSortKey] = useState("price");
@@ -521,12 +555,13 @@ function HomeListScreen({ homes, setHomes, onOpenHome, compareList, toggleCompar
   const stats = useMemo(() => {
     const prices = filtered.map((h) => h.price).filter(Boolean);
     const enriched = filtered.filter((h) => h.flood && h.crime && h.school).length;
+    const inBudget = maxBudget ? filtered.filter((h) => h.price && h.price <= maxBudget.maxPrice).length : null;
     return {
       count: filtered.length, viewed: filtered.filter((h) => h.viewed).length,
       avg: prices.length ? prices.reduce((a, b) => a + b, 0) / prices.length : 0,
-      enriched, total: homes.length,
+      enriched, total: homes.length, inBudget,
     };
-  }, [filtered, homes]);
+  }, [filtered, homes, maxBudget]);
 
   const toggleSort = (key) => { if (sortKey === key) setSortAsc(!sortAsc); else { setSortKey(key); setSortAsc(key === "address" || key === "floodRisk" || key === "appraisalPct"); } };
   const SortHeader = ({ field, children }) => (
@@ -565,6 +600,7 @@ function HomeListScreen({ homes, setHomes, onOpenHome, compareList, toggleCompar
         {[
           { label: "Listings", value: viewedFilter !== "all" || filter || schoolFilter ? `${stats.count} / ${stats.total}` : stats.count, color: "text-sky-600" },
           { label: "Viewed", value: `${stats.viewed}/${stats.count}`, color: "text-teal-600" },
+          ...(stats.inBudget != null ? [{ label: "In Budget", value: `${stats.inBudget}/${stats.count}`, color: stats.inBudget > 0 ? "text-emerald-600" : "text-orange-600" }] : []),
           { label: "Avg Price", value: fmt(stats.avg), color: "text-stone-800" },
           { label: "30yr Rate", value: rateInfo.loading ? "..." : `${fin.rate}%`, color: rateInfo.loading ? "text-stone-400" : "text-sky-600", sub: rateInfo.loading ? "Fetching" : rateInfo.source === "default" ? "Default" : "Live" },
           ...(stats.enriched < stats.count ? [{ label: "Data", value: `${stats.enriched}/${stats.count}`, color: "text-violet-600", sub: "Enriching" }] : []),
@@ -640,6 +676,8 @@ function HomeListScreen({ homes, setHomes, onOpenHome, compareList, toggleCompar
                     <div className="text-right">
                       <p className="text-lg font-bold text-stone-800 tabular-nums">{fmt(h.price)}</p>
                       {monthly > 0 && <p className="text-[11px] text-stone-400 tabular-nums">~{fmt(monthly)}/mo</p>}
+                      {maxBudget && h.price > maxBudget.maxPrice && <p className="text-[10px] font-bold text-orange-500">Over budget</p>}
+                      {maxBudget && h.price <= maxBudget.maxPrice && <p className="text-[10px] font-bold text-teal-500">In budget</p>}
                       {sortKey === "distance" && userLoc && h.lat && <p className="text-[11px] text-sky-500 font-medium tabular-nums">{distanceFor(h).toFixed(1)} mi</p>}
                       {sortKey === "value" && <p className={`text-[11px] font-bold tabular-nums ${valueScores[h.id] >= 70 ? "text-teal-600" : valueScores[h.id] >= 50 ? "text-amber-600" : "text-orange-500"}`}>{valueScores[h.id]} value</p>}
                     </div>
@@ -754,7 +792,7 @@ function HomeListScreen({ homes, setHomes, onOpenHome, compareList, toggleCompar
                     </div>
                   </td>
                   <td className="py-2.5 px-3 text-stone-500">{h.city || "—"}</td>
-                  <td className="py-2.5 px-3 text-stone-900 font-semibold tabular-nums">{fmt(h.price)}</td>
+                  <td className="py-2.5 px-3 text-stone-900 font-semibold tabular-nums">{fmt(h.price)} {maxBudget && <span className={`text-[9px] font-bold ml-1 px-1 py-0.5 rounded ${h.price > maxBudget.maxPrice ? "text-orange-600 bg-orange-50" : "text-teal-600 bg-teal-50"}`}>{h.price > maxBudget.maxPrice ? "OVER" : "OK"}</span>}</td>
                   <td className="py-2.5 px-3 tabular-nums text-xs font-semibold">
                     {h.appraisal && h.price ? (() => {
                       const pct = ((h.price - h.appraisal.value) / h.appraisal.value * 100);
@@ -959,7 +997,7 @@ function analyzeOffer(home, allHomes, soldComps = []) {
   };
 }
 
-function HomeDetailScreen({ home, onBack, onUpdate, compareList, toggleCompare, fin, navList = [], onNavigate, allHomes = [], soldComps = [], onFilterBySchool }) {
+function HomeDetailScreen({ home, onBack, onUpdate, compareList, toggleCompare, fin, navList = [], onNavigate, allHomes = [], soldComps = [], onFilterBySchool, maxBudget }) {
   const swipeRef = useRef(null);
   const touchStart = useRef(null);
   const touchDelta = useRef(0);
@@ -1252,6 +1290,7 @@ function HomeDetailScreen({ home, onBack, onUpdate, compareList, toggleCompare, 
             })()}
             {appraisalLoading && <span className="text-xs text-stone-400 animate-pulse">...</span>}
             {(() => { const vs = calcValueScore(home, allHomes); const color = vs >= 70 ? "text-teal-600 bg-teal-50" : vs >= 50 ? "text-amber-600 bg-amber-50" : "text-orange-500 bg-orange-50"; return <span className={`text-xs font-bold px-1.5 py-0.5 rounded tabular-nums ${color}`} title="Composite value score (0-100) based on price vs appraisal, $/sqft, school, flood, crime, and DOM">{vs} value</span>; })()}
+            {maxBudget && <span className={`text-xs font-bold px-1.5 py-0.5 rounded ${home.price > maxBudget.maxPrice ? "text-orange-600 bg-orange-50" : "text-teal-600 bg-teal-50"}`}>{home.price > maxBudget.maxPrice ? "Over budget" : "In budget"}</span>}
             {home.ppsf && <div className="text-base font-semibold text-sky-600 tabular-nums">{fmt(home.ppsf)}<span className="text-sm font-normal text-sky-500">/sqft</span></div>}
           </div>
           {offer && (
@@ -2555,6 +2594,43 @@ function SettingsScreen({ fin, updateFin, liveRate, rateInfo, homes = [], soldCo
           <p className="text-xs text-stone-400 mt-2">Your total available cash. Closing costs are subtracted first, the remainder goes toward your down payment.</p>
         </div>
 
+        {/* Affordability */}
+        <div className="bg-white border border-stone-200 rounded-2xl p-4 anim-fade-up" style={{ animationDelay: '100ms' }}>
+          <h3 className="text-sm font-semibold text-stone-700 mb-3">Mortgage Affordability</h3>
+          <div className="grid grid-cols-2 gap-3">
+            <InputField label="Gross Annual Income" value={fin.grossIncome || ""} onChange={(v) => updateFin({ grossIncome: Number(v) || 0 })} type="number" prefix="$" />
+            <InputField label="Monthly Debts" value={fin.monthlyDebts || ""} onChange={(v) => updateFin({ monthlyDebts: Number(v) || 0 })} type="number" prefix="$" />
+          </div>
+          <div className="mt-3">
+            <InputField label="Back-End DTI Limit" value={fin.dtiLimit || 36} onChange={(v) => updateFin({ dtiLimit: Number(v) || 36 })} type="number" suffix="%" />
+          </div>
+          <p className="text-xs text-stone-400 mt-2">Most lenders cap back-end DTI at 36–43%. This includes your total housing payment plus all monthly debts divided by gross monthly income.</p>
+          {(() => {
+            const budget = calcMaxBudget(fin);
+            if (!budget) return <p className="text-xs text-stone-400 mt-3 italic">Enter your income to see your estimated max budget.</p>;
+            return (
+              <div className="mt-3 bg-sky-50 border border-sky-200/50 rounded-xl p-3">
+                <div className="flex items-center gap-1.5 mb-2">
+                  <svg className="w-3.5 h-3.5 text-sky-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M2.25 18.75a60.07 60.07 0 0115.797 2.101c.727.198 1.453-.342 1.453-1.096V18.75M3.75 4.5v.75A.75.75 0 013 6h-.75m0 0v-.375c0-.621.504-1.125 1.125-1.125H20.25M2.25 6v9m18-10.5v.75c0 .414.336.75.75.75h.75m-1.5-1.5h.375c.621 0 1.125.504 1.125 1.125v9.75c0 .621-.504 1.125-1.125 1.125h-.375m1.5-1.5H21a.75.75 0 00-.75.75v.75m0 0H3.75m0 0h-.375a1.125 1.125 0 01-1.125-1.125V15m1.5 1.5v-.75A.75.75 0 003 15h-.75M15 10.5a3 3 0 11-6 0 3 3 0 016 0zm3 0h.008v.008H18V10.5zm-12 0h.008v.008H6V10.5z" /></svg>
+                  <span className="text-xs font-semibold text-sky-700">Estimated Approval</span>
+                </div>
+                <div className="flex items-baseline gap-3">
+                  <div>
+                    <div className="text-2xl font-bold text-sky-700 tabular-nums">{fmt(budget.maxPrice)}</div>
+                    <div className="text-[10px] text-sky-500">max home price</div>
+                  </div>
+                  <div className="text-stone-300">|</div>
+                  <div>
+                    <div className="text-lg font-bold text-sky-700 tabular-nums">{fmt(budget.maxMonthly)}</div>
+                    <div className="text-[10px] text-sky-500">max monthly PITI</div>
+                  </div>
+                </div>
+                <p className="text-[10px] text-sky-500 mt-2">Based on {(fin.dtiLimit || 36)}% DTI with {fmt(fin.cash)} cash, {fin.rate}% rate, {fin.term}yr term. Homes above this will be flagged.</p>
+              </div>
+            );
+          })()}
+        </div>
+
         {/* Loan Terms */}
         <div className="bg-white border border-stone-200 rounded-2xl p-4 anim-fade-up" style={{ animationDelay: '120ms' }}>
           <h3 className="text-sm font-semibold text-stone-700 mb-3">Loan Terms</h3>
@@ -2880,7 +2956,7 @@ export default function CribsApp() {
   const [rateInfo, setRateInfo] = useState({ loading: true, source: null, asOf: null });
   const [fin, setFin] = useState(() => {
     try { const s = localStorage.getItem("cribs_fin"); if (s) return JSON.parse(s); } catch {}
-    return { cash: 750000, rate: DEFAULT_RATE, term: 30, propTax: 1.8, insurance: 3600, closing: 2.5, appreciation: 3, projYears: 10, places: [
+    return { cash: 750000, rate: DEFAULT_RATE, term: 30, propTax: 1.8, insurance: 3600, closing: 2.5, appreciation: 3, projYears: 10, grossIncome: 0, monthlyDebts: 0, dtiLimit: 36, places: [
     { label: "Work", address: "2322 W Grand Pkwy N, Katy, TX", lat: 29.8335, lng: -95.7675, icon: "briefcase" },
     { label: "Mom's House", address: "16015 Beechnut St, Houston, TX", lat: 29.6880, lng: -95.5810, icon: "heart" },
   ] };
@@ -2890,6 +2966,7 @@ export default function CribsApp() {
     try { localStorage.setItem("cribs_fin", JSON.stringify(next)); } catch {}
     return next;
   });
+  const maxBudget = useMemo(() => calcMaxBudget(fin), [fin]);
   useEffect(() => { try { localStorage.setItem("cribs_sold_comps", JSON.stringify(soldComps)); } catch {} }, [soldComps]);
 
   useEffect(() => {
@@ -3054,7 +3131,7 @@ export default function CribsApp() {
               <svg className="w-5 h-5" viewBox="0 0 24 24" fill="white"><path d="M12 3L2 12h3v8h5v-5h4v5h5v-8h3L12 3z"/></svg>
             </div>
             <h1 className="text-lg font-bold tracking-tight text-stone-800">CRIBS</h1>
-            <span className="text-[10px] text-stone-400 font-medium ml-1 self-end mb-0.5">v1.0.2</span>
+            <span className="text-[10px] text-stone-400 font-medium ml-1 self-end mb-0.5">v1.1.0</span>
           </div>
           <nav className="flex gap-1 bg-stone-100 rounded-lg p-0.5 border border-stone-200">
             <button onClick={goList} className={`px-4 py-2 text-sm font-medium rounded-md transition-colors ${screen === "list" || screen === "detail" ? "bg-white text-sky-600 shadow-sm" : "text-stone-500 hover:text-stone-700"}`}>Homes</button>
@@ -3067,8 +3144,8 @@ export default function CribsApp() {
       </header>
 
       <div className="max-w-6xl mx-auto">
-        {screen === "list" && <HomeListScreen homes={homes} setHomes={setHomes} onOpenHome={openHome} compareList={compareList} toggleCompare={toggleCompare} onImport={handleImport} fin={fin} rateInfo={rateInfo} schoolFilter={schoolFilter} setSchoolFilter={setSchoolFilter} />}
-        {screen === "detail" && activeHome && <HomeDetailScreen home={activeHome} onBack={goList} onUpdate={updateHome} compareList={compareList} toggleCompare={toggleCompare} fin={fin} navList={navList} onNavigate={navigateHome} allHomes={homes} soldComps={soldComps} onFilterBySchool={(name) => { setSchoolFilter(name); setScreen("list"); }} />}
+        {screen === "list" && <HomeListScreen homes={homes} setHomes={setHomes} onOpenHome={openHome} compareList={compareList} toggleCompare={toggleCompare} onImport={handleImport} fin={fin} rateInfo={rateInfo} schoolFilter={schoolFilter} setSchoolFilter={setSchoolFilter} maxBudget={maxBudget} />}
+        {screen === "detail" && activeHome && <HomeDetailScreen home={activeHome} onBack={goList} onUpdate={updateHome} compareList={compareList} toggleCompare={toggleCompare} fin={fin} navList={navList} onNavigate={navigateHome} allHomes={homes} soldComps={soldComps} onFilterBySchool={(name) => { setSchoolFilter(name); setScreen("list"); }} maxBudget={maxBudget} />}
         {screen === "compare" && <CompareScreen homes={homes} compareList={compareList} toggleCompare={toggleCompare} clearCompare={() => setCompareList([])} onOpenHome={openHome} fin={fin} />}
         {screen === "settings" && <SettingsScreen fin={fin} updateFin={updateFin} liveRate={liveRate} rateInfo={rateInfo} homes={homes} soldComps={soldComps} setSoldComps={setSoldComps} darkMode={darkMode} setDarkMode={setDarkMode} />}
       </div>
