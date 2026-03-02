@@ -497,7 +497,7 @@ function DropZone({ onImport, compact }) {
 /* ═══════════════════════════════════════════════════════════════════
    SCREEN: Home List
    ═══════════════════════════════════════════════════════════════════ */
-function HomeListScreen({ homes, setHomes, onOpenHome, compareList, toggleCompare, onImport, fin, rateInfo, schoolFilter, setSchoolFilter, maxBudget }) {
+function HomeListScreen({ homes, setHomes, onOpenHome, compareList, toggleCompare, onImport, fin, rateInfo, schoolFilter, setSchoolFilter, maxBudget, enrichDone }) {
   const [filter, setFilter] = useState("");
   const [viewedFilter, setViewedFilter] = useState("all");
   const [sortKey, setSortKey] = useState("price");
@@ -603,7 +603,7 @@ function HomeListScreen({ homes, setHomes, onOpenHome, compareList, toggleCompar
           ...(stats.inBudget != null ? [{ label: "In Budget", value: `${stats.inBudget}/${stats.count}`, color: stats.inBudget > 0 ? "text-emerald-600" : "text-orange-600" }] : []),
           { label: "Avg Price", value: fmt(stats.avg), color: "text-stone-800" },
           { label: "30yr Rate", value: rateInfo.loading ? "..." : `${fin.rate}%`, color: rateInfo.loading ? "text-stone-400" : "text-sky-600", sub: rateInfo.loading ? "Fetching" : rateInfo.source === "default" ? "Default" : "Live" },
-          ...(stats.enriched < stats.count ? [{ label: "Data", value: `${stats.enriched}/${stats.count}`, color: "text-violet-600", sub: "Enriching" }] : []),
+          ...(stats.enriched < stats.count && !enrichDone ? [{ label: "Data", value: `${stats.enriched}/${stats.count}`, color: "text-violet-600", sub: "Enriching" }] : []),
         ].map((s, i) => (
           <div key={s.label} style={{ animationDelay: `${i * 60}ms` }} className="anim-fade-up bg-white border border-stone-200 rounded-xl px-3.5 py-2.5 shadow-sm flex-shrink-0">
             <div className="text-[10px] text-stone-400 uppercase tracking-wider font-semibold">{s.label}</div>
@@ -2986,11 +2986,12 @@ export default function CribsApp() {
 
   // Batch-fetch external data (flood, crime, school) for homes missing data
   const enrichingRef = useRef(false);
+  const [enrichDone, setEnrichDone] = useState(false);
   useEffect(() => {
     if (enrichingRef.current) return;
     // Skip if all homes already have data
     const needsEnrich = homes.filter(h => !h.flood || !h.crime || !h.school);
-    if (needsEnrich.length === 0) return;
+    if (needsEnrich.length === 0) { setEnrichDone(true); return; }
     enrichingRef.current = true;
     let cancelled = false;
 
@@ -3036,7 +3037,7 @@ export default function CribsApp() {
     };
 
     // Snapshot current homes for iteration
-    enrich([...homes]);
+    enrich([...homes]).then(() => { if (!cancelled) setEnrichDone(true); });
     return () => { cancelled = true; };
   }, []);
 
@@ -3144,7 +3145,7 @@ export default function CribsApp() {
       </header>
 
       <div className="max-w-6xl mx-auto">
-        {screen === "list" && <HomeListScreen homes={homes} setHomes={setHomes} onOpenHome={openHome} compareList={compareList} toggleCompare={toggleCompare} onImport={handleImport} fin={fin} rateInfo={rateInfo} schoolFilter={schoolFilter} setSchoolFilter={setSchoolFilter} maxBudget={maxBudget} />}
+        {screen === "list" && <HomeListScreen homes={homes} setHomes={setHomes} onOpenHome={openHome} compareList={compareList} toggleCompare={toggleCompare} onImport={handleImport} fin={fin} rateInfo={rateInfo} schoolFilter={schoolFilter} setSchoolFilter={setSchoolFilter} maxBudget={maxBudget} enrichDone={enrichDone} />}
         {screen === "detail" && activeHome && <HomeDetailScreen home={activeHome} onBack={goList} onUpdate={updateHome} compareList={compareList} toggleCompare={toggleCompare} fin={fin} navList={navList} onNavigate={navigateHome} allHomes={homes} soldComps={soldComps} onFilterBySchool={(name) => { setSchoolFilter(name); setScreen("list"); }} maxBudget={maxBudget} />}
         {screen === "compare" && <CompareScreen homes={homes} compareList={compareList} toggleCompare={toggleCompare} clearCompare={() => setCompareList([])} onOpenHome={openHome} fin={fin} />}
         {screen === "settings" && <SettingsScreen fin={fin} updateFin={updateFin} liveRate={liveRate} rateInfo={rateInfo} homes={homes} soldComps={soldComps} setSoldComps={setSoldComps} darkMode={darkMode} setDarkMode={setDarkMode} />}
