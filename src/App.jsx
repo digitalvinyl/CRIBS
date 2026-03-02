@@ -153,10 +153,20 @@ function calcMaxBudget(fin) {
 }
 
 async function fetchLiveRate() {
+  // Check localStorage cache first (valid for 24h)
   try {
+    const cached = JSON.parse(localStorage.getItem("cribs_live_rate") || "null");
+    if (cached && cached.rate && Date.now() - cached.ts < 86400000) {
+      return { rate: cached.rate, source: cached.source || "Cached", asOf: cached.asOf };
+    }
+  } catch {}
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 8000);
     const res = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
+      signal: controller.signal,
       body: JSON.stringify({
         model: "claude-sonnet-4-20250514",
         max_tokens: 1000,
@@ -165,16 +175,26 @@ async function fetchLiveRate() {
         tools: [{ type: "web_search_20250305", name: "web_search" }],
       }),
     });
+    clearTimeout(timeout);
     const data = await res.json();
     const text = data.content?.map((b) => b.type === "text" ? b.text : "").join("") || "";
     const clean = text.replace(/```json|```/g, "").trim();
     const parsed = JSON.parse(clean);
     if (parsed.rate && typeof parsed.rate === "number" && parsed.rate > 0 && parsed.rate < 20) {
+      try { localStorage.setItem("cribs_live_rate", JSON.stringify({ rate: parsed.rate, source: parsed.source, asOf: parsed.asOf, ts: Date.now() })); } catch {}
       return parsed;
     }
   } catch (e) { /* fall through */ }
+  // Check cache as fallback (even if expired)
+  try {
+    const cached = JSON.parse(localStorage.getItem("cribs_live_rate") || "null");
+    if (cached && cached.rate) {
+      return { rate: cached.rate, source: "Cached", asOf: cached.asOf };
+    }
+  } catch {}
   return null;
 }
+
 
 async function fetchAppraisal(address, city, state) {
   try {
@@ -202,9 +222,12 @@ async function fetchAppraisal(address, city, state) {
 
 async function fetchFloodZone(address, city, state, zip) {
   try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10000);
     const res = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
+      signal: controller.signal,
       body: JSON.stringify({
         model: "claude-sonnet-4-20250514",
         max_tokens: 1000,
@@ -224,9 +247,12 @@ async function fetchFloodZone(address, city, state, zip) {
 
 async function fetchCrime(address, city, state, zip) {
   try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10000);
     const res = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
+      signal: controller.signal,
       body: JSON.stringify({
         model: "claude-sonnet-4-20250514",
         max_tokens: 1000,
@@ -246,9 +272,12 @@ async function fetchCrime(address, city, state, zip) {
 
 async function fetchSchool(address, city, state, zip) {
   try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10000);
     const res = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
+      signal: controller.signal,
       body: JSON.stringify({
         model: "claude-sonnet-4-20250514",
         max_tokens: 1000,
@@ -2850,17 +2879,37 @@ function SettingsScreen({ fin, updateFin, liveRate, rateInfo, homes = [], soldCo
             </div>
           )}
         </div>
+
+        {/* Reset Data */}
+        <div className="bg-white border border-orange-200 rounded-2xl p-4 anim-fade-up" style={{ animationDelay: '320ms' }}>
+          <h3 className="text-sm font-semibold text-orange-700 mb-2">Reset Data</h3>
+          <p className="text-xs text-stone-400 mb-3">Clear browser cache and reload the default 52 homes with all enrichment data. Your settings will be preserved.</p>
+          <button onClick={() => { if (window.confirm("Reset all home data to defaults? Your financial settings will be preserved, but any custom notes, ratings, and viewed flags will be lost.")) { localStorage.removeItem("cribs_homes"); localStorage.removeItem("cribs_live_rate"); window.location.reload(); } }}
+            className="text-xs font-medium text-orange-600 hover:text-orange-700 bg-orange-50 hover:bg-orange-100 px-3 py-1.5 rounded-lg border border-orange-200 transition-colors">Reset Home Data</button>
+        </div>
       </div>
     </div>
   );
 }
-
 /* ═══════════════════════════════════════════════════════════════════
    MAIN APP
    ═══════════════════════════════════════════════════════════════════ */
 export default function CribsApp() {
   const [homes, setHomes] = useState(() => {
-    try { const s = localStorage.getItem("cribs_homes"); if (s) { const p = JSON.parse(s); if (Array.isArray(p) && p.length > 0) return p; } } catch {}
+    try {
+      const s = localStorage.getItem("cribs_homes");
+      if (s) {
+        const p = JSON.parse(s);
+        if (Array.isArray(p) && p.length > 0) {
+          // Check if data has enrichment (v1.1+ format). If localStorage homes
+          // are from a pre-enrichment version, reset to baked-in defaults.
+          const hasEnrichment = p.some(h => h.flood && h.crime && h.school);
+          if (hasEnrichment) return p;
+          // Old data without enrichment - fall through to defaults
+          localStorage.removeItem("cribs_homes");
+        }
+      }
+    } catch {}
     return [
     { id: "r001", address: "6510 Sivley St", city: "Houston", state: "TX", zip: "77055", lat: 29.7971612, lng: -95.4650439, price: 1695000, beds: 4, baths: 5.0, sqft: 5288, lotSize: 8125, yearBuilt: 2025, dom: 1, ppsf: 321, hoa: 0, propertyType: "Single Family Residential", status: "Active", url: "https://www.redfin.com/TX/Houston/6510-Sivley-St-77055/home/30017890", viewed: false, favorite: false, notes: "", ratings: emptyRatings(), pool: null, taxRate: 2.11, taxJurisdictions: [{ entity: "Harris County", rate: 0.3491 }, { entity: "HC Flood Control", rate: 0.0281 }, { entity: "Port of Houston", rate: 0.0106 }, { entity: "HC Hospital District", rate: 0.1439 }, { entity: "HC Dept of Education", rate: 0.0049 }, { entity: "City of Houston", rate: 0.5189 }, { entity: "Spring Branch ISD", rate: 1.0572 }], appraisal: { value: 1417000, year: 2025, source: "HCAD" }, flood: { zone: "X", zoneDesc: "Minimal Flood Hazard", risk: "low", panel: "48201C0415M", notes: null }, crime: { risk: "moderate", grade: "C+", violentPerK: 4.5, propertyPerK: 27.8, nationalAvgViolent: 4.0, nationalAvgProperty: 19.6, topConcerns: ["Vehicle theft", "Burglary"], source: "NeighborhoodScout", notes: "Spring Branch area. Property crime above average — standard for inner-loop Houston. Vehicle theft is primary concern." }, school: { schoolName: "Housman Elementary", district: "SBISD", rating: 5, ratingSource: "GreatSchools", tier: "good", grades: "PK-5", enrollment: 620, nicheGrade: "B-", testScores: 42, studentTeacherRatio: 15, notes: "Spring Branch ISD. Dual language program available. Feeds into Spring Branch Middle and Memorial High.", distance: "0.4 mi" } },
     { id: "r002", address: "1410 Aldrich St", city: "Houston", state: "TX", zip: "77055", lat: 29.7954556, lng: -95.4641365, price: 1836880, beds: 5, baths: 5.5, sqft: 5032, lotSize: 7553, yearBuilt: 2026, dom: 1, ppsf: 365, hoa: 0, propertyType: "Single Family Residential", status: "Active", url: "https://www.redfin.com/TX/Houston/1410-Aldrich-St-77055/home/30018417", viewed: false, favorite: false, notes: "", ratings: emptyRatings(), pool: null, taxRate: 2.11, taxJurisdictions: [{ entity: "Harris County", rate: 0.3491 }, { entity: "HC Flood Control", rate: 0.0281 }, { entity: "Port of Houston", rate: 0.0106 }, { entity: "HC Hospital District", rate: 0.1439 }, { entity: "HC Dept of Education", rate: 0.0049 }, { entity: "City of Houston", rate: 0.5189 }, { entity: "Spring Branch ISD", rate: 1.0572 }], appraisal: { value: 1649000, year: 2025, source: "HCAD" }, flood: { zone: "X", zoneDesc: "Minimal Flood Hazard", risk: "low", panel: "48201C0415M", notes: null }, crime: { risk: "moderate", grade: "C+", violentPerK: 4.5, propertyPerK: 27.8, nationalAvgViolent: 4.0, nationalAvgProperty: 19.6, topConcerns: ["Vehicle theft", "Burglary"], source: "NeighborhoodScout", notes: "Spring Branch area. Property crime above average — standard for inner-loop Houston. Vehicle theft is primary concern." }, school: { schoolName: "Housman Elementary", district: "SBISD", rating: 5, ratingSource: "GreatSchools", tier: "good", grades: "PK-5", enrollment: 620, nicheGrade: "B-", testScores: 42, studentTeacherRatio: 15, notes: "Spring Branch ISD. Dual language program available. Feeds into Spring Branch Middle and Memorial High.", distance: "0.5 mi" } },
@@ -3036,9 +3085,11 @@ export default function CribsApp() {
       }
     };
 
-    // Snapshot current homes for iteration
-    enrich([...homes]).then(() => { if (!cancelled) setEnrichDone(true); });
-    return () => { cancelled = true; };
+    // Snapshot current homes for iteration. Also set a safety timeout
+    // in case API is unreachable (no key on Vercel).
+    const safetyTimeout = setTimeout(() => { if (!cancelled) setEnrichDone(true); }, 15000);
+    enrich([...homes]).then(() => { clearTimeout(safetyTimeout); if (!cancelled) setEnrichDone(true); });
+    return () => { cancelled = true; clearTimeout(safetyTimeout); };
   }, []);
 
   const handleImport = (newHomes) => {
@@ -3132,7 +3183,7 @@ export default function CribsApp() {
               <svg className="w-5 h-5" viewBox="0 0 24 24" fill="white"><path d="M12 3L2 12h3v8h5v-5h4v5h5v-8h3L12 3z"/></svg>
             </div>
             <h1 className="text-lg font-bold tracking-tight text-stone-800">CRIBS</h1>
-            <span className="text-[10px] text-stone-400 font-medium ml-1 self-end mb-0.5">v1.1.1</span>
+            <span className="text-[10px] text-stone-400 font-medium ml-1 self-end mb-0.5">v1.1.2</span>
           </div>
           <nav className="flex gap-1 bg-stone-100 rounded-lg p-0.5 border border-stone-200">
             <button onClick={goList} className={`px-4 py-2 text-sm font-medium rounded-md transition-colors ${screen === "list" || screen === "detail" ? "bg-white text-sky-600 shadow-sm" : "text-stone-500 hover:text-stone-700"}`}>Homes</button>
