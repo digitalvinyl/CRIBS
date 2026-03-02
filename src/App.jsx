@@ -96,6 +96,13 @@ function calcValueScore(h, allHomes) {
   if (h.crime?.risk === "high") score -= 8;
   else if (h.crime?.risk === "low") score += 4;
 
+  // ── Parks & Green Space (0 to +8 pts) ────────────────────────
+  if (h.parks?.greenSpaceScore === "excellent") score += 8;
+  else if (h.parks?.greenSpaceScore === "good") score += 5;
+  else if (h.parks?.greenSpaceScore === "fair") score += 2;
+  if (h.parks?.hasTrail) score += 2;
+  if (h.parks?.hasPlayground) score += 1;
+
   // ── DOM leverage (0-10 pts) ───────────────────────────────────
   const dom = h.dom || 0;
   if (dom > 90) score += 10;
@@ -279,6 +286,33 @@ async function fetchSchool(address, city, state, zip) {
   return null;
 }
 
+async function fetchNearbyParks(address, city, state, zip, lat, lng) {
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10000);
+    const coord = lat && lng ? ` Coords: ${lat},${lng}.` : "";
+    const res = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      signal: controller.signal,
+      body: JSON.stringify({
+        model: "claude-sonnet-4-20250514",
+        max_tokens: 800,
+        system: `Return ONLY JSON, no markdown. Find parks/trails within 1 mile of the address. Shape: {"parks":[{"name":"<n>","distanceMi":<num>,"type":"<Park|Trail|Nature Preserve|Pocket Park>","acres":<num|null>,"amenities":["<a1>","<a2>"]}],"nearestParkName":"<n>","nearestDistanceMi":<num>,"parkCount1Mi":<count>,"hasTrail":<bool>,"hasPlayground":<bool>,"greenSpaceScore":"<excellent|good|fair|poor>","notes":"<1 sentence>"}. Max 4 parks, sorted by distance. If none found: {"parks":[],"nearestParkName":null,"nearestDistanceMi":null,"parkCount1Mi":0,"hasTrail":false,"hasPlayground":false,"greenSpaceScore":null,"notes":null}.`,
+        messages: [{ role: "user", content: `Parks within 1 mile of ${address}, ${city}, ${state} ${zip || ""}.${coord} JSON only.` }],
+        tools: [{ type: "web_search_20250305", name: "web_search" }],
+      }),
+    });
+    clearTimeout(timeout);
+    const data = await res.json();
+    const text = data.content?.map((b) => b.type === "text" ? b.text : "").join("") || "";
+    const clean = text.replace(/```json|```/g, "").trim();
+    const parsed = JSON.parse(clean);
+    if (parsed.parks && Array.isArray(parsed.parks)) return parsed;
+  } catch (e) { /* fall through */ }
+  return null;
+}
+
 function haversine(lat1, lon1, lat2, lon2) {
   const R = 3958.8; // miles
   const dLat = (lat2 - lat1) * Math.PI / 180;
@@ -384,6 +418,15 @@ const CrimeIcon = ({ risk, className }) => {
         <svg key={i} className={count === 1 ? "w-3.5 h-3.5" : "w-3 h-3"} viewBox="0 0 24 24" fill="currentColor"><path d={shield}/></svg>
       ))}
     </span>
+  );
+};
+const ParkIcon = ({ score, className }) => {
+  const color = score === "excellent" ? "text-emerald-500" : score === "good" ? "text-teal-500" : score === "fair" ? "text-amber-500" : "text-stone-400";
+  return (
+    <div className={`flex items-center gap-0.5 ${color} ${className || ""}`}>
+      <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor"><path d="M17 12c-3.87 0-7 3.13-7 7h2c0-2.76 2.24-5 5-5s5 2.24 5 5h2c0-3.87-3.13-7-7-7zm0-5C10.93 7 6.18 10.17 4.25 15h2.1c1.73-3.71 5.5-6.29 9.65-6.29S22.17 11.29 23.9 15H26c-1.93-4.83-6.68-8-12.75-8zM12 22H2v2h10v-2zm1-3H3v2h10v-2z"/></svg>
+      <svg className="w-5 h-5" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C8 2 5 5 5 8.5c0 2 1 3.5 2 4.5V22h2v-5h6v5h2V13c1-1 2-2.5 2-4.5C19 5 16 2 12 2zm-1 15H9v-1.5h2V17zm0-3H9v-1.5h2V14zm4 3h-2v-1.5h2V17zm0-3h-2v-1.5h2V14z"/></svg>
+    </div>
   );
 };
 const SchoolIcon = ({ tier, className }) => {
@@ -552,6 +595,7 @@ function HomeListScreen({ homes, setHomes, onOpenHome, compareList, toggleCompar
       const getVal = (h) => {
         if (sortKey === "schoolRating") return h.school?.rating ?? null;
         if (sortKey === "floodRisk") { const m = { low: 1, moderate: 2, high: 3 }; return m[h.flood?.risk] ?? null; }
+        if (sortKey === "nearestPark") return h.parks?.nearestDistanceMi ?? null;
         if (sortKey === "appraisalPct") return h.appraisal && h.price ? ((h.price - h.appraisal.value) / h.appraisal.value * 100) : null;
         if (sortKey === "value") return valueScores[h.id] ?? null;
         return h[sortKey];
@@ -590,6 +634,7 @@ function HomeListScreen({ homes, setHomes, onOpenHome, compareList, toggleCompar
     { key: "sqft", label: "Size" },
     { key: "schoolRating", icon: <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M4.26 10.147a60.438 60.438 0 00-.491 6.347A48.62 48.62 0 0112 20.904a48.62 48.62 0 018.232-4.41 60.46 60.46 0 00-.491-6.347m-15.482 0a50.636 50.636 0 00-2.658-.813A59.906 59.906 0 0112 3.493a59.903 59.903 0 0110.399 5.84c-.896.248-1.783.52-2.658.814m-15.482 0A50.717 50.717 0 0112 13.489a50.702 50.702 0 017.74-3.342M6.75 15v-3.75m0 0h-.008v.008H6.75V11.25z" /></svg> },
     { key: "floodRisk", icon: <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2c0 0-5.5 7.5-5.5 11.5C6.5 16.54 8.96 19 12 19s5.5-2.46 5.5-5.5C17.5 9.5 12 2 12 2z"/></svg> },
+    { key: "nearestPark", icon: <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C8.5 2 6 5 6 8c0 2 1.5 3.5 3 4.5V22h6V12.5c1.5-1 3-2.5 3-4.5 0-3-2.5-6-6-6z"/></svg> },
     { key: "distance", label: "Nearest" },
   ];
 
@@ -738,6 +783,14 @@ function HomeListScreen({ homes, setHomes, onOpenHome, compareList, toggleCompar
                         </span>
                       </span>
                     )}
+                    {h.parks && h.parks.nearestDistanceMi != null && (
+                      <span className="flex items-center gap-1">
+                        <svg className={`w-3.5 h-3.5 ${h.parks.greenSpaceScore === "excellent" ? "text-emerald-500" : h.parks.greenSpaceScore === "good" ? "text-teal-500" : "text-amber-500"}`} viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C8.5 2 6 5 6 8c0 2 1.5 3.5 3 4.5V22h6V12.5c1.5-1 3-2.5 3-4.5 0-3-2.5-6-6-6z"/></svg>
+                        <span className={`text-[11px] font-medium ${h.parks.greenSpaceScore === "excellent" ? "text-emerald-500" : h.parks.greenSpaceScore === "good" ? "text-teal-500" : "text-amber-500"}`}>
+                          {h.parks.nearestDistanceMi.toFixed(1)}mi
+                        </span>
+                      </span>
+                    )}
                     {(() => {
                       const vs = valueScores[h.id];
                       return vs != null ? <span className={`text-[10px] font-bold tabular-nums px-1.5 py-0.5 rounded ${vs >= 70 ? "text-teal-700 bg-teal-50" : vs >= 50 ? "text-amber-700 bg-amber-50" : "text-orange-600 bg-orange-50"}`}>{vs} value</span> : null;
@@ -753,7 +806,7 @@ function HomeListScreen({ homes, setHomes, onOpenHome, compareList, toggleCompar
 
       {/* ─── Desktop: Table ────────────────────────────────────────── */}
       <div className="hidden md:block overflow-x-auto rounded-xl border border-stone-200 shadow-sm bg-white">
-        <table className="w-full text-sm">
+        <table className="w-full text-sm min-w-[1400px]">
           <thead className="bg-stone-50/80 border-b border-stone-200">
             <tr>
               <th className="py-3 px-3 w-8"></th>
@@ -773,6 +826,7 @@ function HomeListScreen({ homes, setHomes, onOpenHome, compareList, toggleCompar
               <th className="py-3 px-3 text-xs font-semibold tracking-wider uppercase text-stone-400">Flood</th>
               <th className="py-3 px-3 text-xs font-semibold tracking-wider uppercase text-stone-400">Crime</th>
               <th className="py-3 px-3 text-xs font-semibold tracking-wider uppercase text-stone-400">School</th>
+              <SortHeader field="nearestPark">Parks</SortHeader>
               <SortHeader field="value"><span title="Composite score (0-100) based on price vs appraisal, $/sqft vs area median, school rating, flood risk, crime, and days on market. Higher = better value.">Value</span></SortHeader>
               <th className="py-3 px-3 text-xs font-semibold tracking-wider uppercase text-stone-400">Avg ★</th>
               <th className="py-3 px-3 w-8"></th>
@@ -838,6 +892,13 @@ function HomeListScreen({ homes, setHomes, onOpenHome, compareList, toggleCompar
                     {h.school ? (
                       <span title={h.school.schoolName || ""}>
                         <SchoolIcon tier={h.school.tier} />
+                      </span>
+                    ) : <span className="text-stone-300 text-xs">—</span>}
+                  </td>
+                  <td className="py-2.5 px-3 text-center">
+                    {h.parks ? (
+                      <span title={`${h.parks.parkCount1Mi || 0} parks within 1 mi${h.parks.nearestParkName ? " · Nearest: " + h.parks.nearestParkName : ""}`} className={`text-xs font-bold tabular-nums px-1.5 py-0.5 rounded ${h.parks.greenSpaceScore === "excellent" ? "text-emerald-600 bg-emerald-50" : h.parks.greenSpaceScore === "good" ? "text-teal-600 bg-teal-50" : "text-amber-600 bg-amber-50"}`}>
+                        {h.parks.parkCount1Mi || 0}
                       </span>
                     ) : <span className="text-stone-300 text-xs">—</span>}
                   </td>
@@ -1177,11 +1238,14 @@ function HomeDetailScreen({ home, onBack, onUpdate, compareList, toggleCompare, 
   const [crimeLoading, setCrimeLoading] = useState(false);
   const [school, setSchool] = useState(home.school || null);
   const [schoolLoading, setSchoolLoading] = useState(false);
+  const [parks, setParks] = useState(home.parks || null);
+  const [parksLoading, setParksLoading] = useState(false);
 
   // Sync from props when batch fetch updates the home object
   useEffect(() => { if (home.flood && !flood) setFlood(home.flood); }, [home.flood]);
   useEffect(() => { if (home.crime && !crime) setCrime(home.crime); }, [home.crime]);
   useEffect(() => { if (home.school && !school) setSchool(home.school); }, [home.school]);
+  useEffect(() => { if (home.parks && !parks) setParks(home.parks); }, [home.parks]);
 
   // Individual fetch fallback — only if prop and local state both null
   useEffect(() => {
@@ -1216,6 +1280,18 @@ function HomeDetailScreen({ home, onBack, onUpdate, compareList, toggleCompare, 
       if (cancelled) return;
       setSchoolLoading(false);
       if (result?.schoolName) { setSchool(result); onUpdate(home.id, { school: result }); }
+    });
+    return () => { cancelled = true; };
+  }, [home.id]);
+
+  useEffect(() => {
+    if (parks || home.parks) { if (home.parks) setParks(home.parks); return; }
+    let cancelled = false;
+    setParksLoading(true);
+    fetchNearbyParks(home.address, home.city, home.state, home.zip, home.lat, home.lng).then((result) => {
+      if (cancelled) return;
+      setParksLoading(false);
+      if (result?.parks) { setParks(result); onUpdate(home.id, { parks: result }); }
     });
     return () => { cancelled = true; };
   }, [home.id]);
@@ -1679,6 +1755,100 @@ function HomeDetailScreen({ home, onBack, onUpdate, compareList, toggleCompare, 
                     if (r && r.schoolName) { setSchool(r); onUpdate(home.id, { school: r }); }
                   });
                 }} className="text-sm text-sky-600 font-medium hover:text-sky-700">Fetch school data →</button>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* ── Parks & Green Space ──────────────────────────────── */}
+        <div className={`border rounded-2xl overflow-hidden anim-fade-up ${parks?.greenSpaceScore === "excellent" ? "bg-emerald-50/50 border-emerald-200" : parks?.greenSpaceScore === "good" ? "bg-teal-50/50 border-teal-200" : "bg-white border-stone-200"}`} style={{ animationDelay: '260ms' }}>
+          <div className="p-4">
+            <div className="flex items-center justify-between mb-3">
+              <div className="flex items-center gap-2">
+                <svg className={`w-5 h-5 ${parks?.greenSpaceScore === "excellent" ? "text-emerald-500" : parks?.greenSpaceScore === "good" ? "text-teal-500" : parks?.greenSpaceScore === "fair" ? "text-amber-500" : "text-stone-400"}`} viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C8.5 2 6 5 6 8c0 2 1.5 3.5 3 4.5V22h6V12.5c1.5-1 3-2.5 3-4.5 0-3-2.5-6-6-6zm-2 14H8v-1h2v1zm0-2.5H8v-1h2v1zm4 2.5h-2v-1h2v1zm0-2.5h-2v-1h2v1z"/></svg>
+                <h3 className="text-sm font-semibold text-stone-700">Parks & Green Space</h3>
+              </div>
+              {parks && (
+                <span className={`text-xs font-semibold px-2.5 py-1 rounded-full ${parks.greenSpaceScore === "excellent" ? "bg-emerald-100 text-emerald-600" : parks.greenSpaceScore === "good" ? "bg-teal-100 text-teal-600" : parks.greenSpaceScore === "fair" ? "bg-amber-100 text-amber-600" : "bg-stone-100 text-stone-500"}`}>
+                  {parks.greenSpaceScore === "excellent" ? "Excellent" : parks.greenSpaceScore === "good" ? "Good" : parks.greenSpaceScore === "fair" ? "Fair" : "Limited"}
+                </span>
+              )}
+            </div>
+
+            {parksLoading && <div className="text-sm text-stone-400 animate-pulse py-4">Finding nearby parks...</div>}
+
+            {parks && (
+              <div className="space-y-3">
+                {/* Quick stats row */}
+                <div className="grid grid-cols-3 gap-2 text-center">
+                  <div className="bg-teal-50/40 rounded-xl p-2.5">
+                    <div className="text-xl font-bold text-teal-600 mt-0.5">{parks.parkCount1Mi || 0}</div>
+                    <div className="text-[10px] text-stone-400">Within 1 mi</div>
+                  </div>
+
+                  <div className="bg-teal-50/40 rounded-xl p-2.5">
+                    <div className="text-xl font-bold text-teal-600 mt-0.5">{parks.nearestDistanceMi != null ? parks.nearestDistanceMi.toFixed(1) : "—"}<span className="text-xs text-stone-400 font-normal"> mi</span></div>
+                    <div className="text-[10px] text-stone-400">Nearest</div>
+                  </div>
+                  <div>
+                    <div className="flex items-center justify-center gap-1 mt-0.5">
+                      {parks.hasTrail && <span className="text-[10px] bg-emerald-100 text-emerald-700 px-1.5 py-0.5 rounded-full font-medium">Trail</span>}
+                      {parks.hasPlayground && <span className="text-[10px] bg-sky-100 text-sky-700 px-1.5 py-0.5 rounded-full font-medium">Play</span>}
+                    </div>
+                    <div className="text-[10px] text-stone-400 mt-1">Amenities</div>
+                  </div>
+                </div>
+
+                {/* Individual park cards */}
+                {parks.parks?.length > 0 && (
+                  <div className="space-y-1.5 mt-2">
+                    {parks.parks.slice(0, 4).map((park, i) => (
+                      <div key={i} className="flex items-start gap-3 p-2.5 rounded-xl bg-white/80 border border-stone-100">
+                        <div className="flex-shrink-0 w-8 h-8 rounded-lg bg-teal-50 flex items-center justify-center">
+                          <span className="text-sm">{park.type === "Trail" || park.type === "Linear Park" ? "🥾" : park.type === "Nature Preserve" ? "🌿" : "🌳"}</span>
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center justify-between">
+                            <span className="text-sm font-semibold text-stone-700 truncate">{park.name}</span>
+                            <span className="text-xs font-bold text-teal-600 ml-2 flex-shrink-0">{park.distance || (park.distanceMi ? park.distanceMi.toFixed(1) + " mi" : "")}</span>
+                          </div>
+                          <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
+                            <span className="text-[10px] text-stone-400">{park.type}</span>
+                            {park.acres && <span className="text-[10px] text-stone-400">· {park.acres} ac</span>}
+                            {park.rating && <span className="text-[10px] text-amber-500">★ {park.rating}</span>}
+                          </div>
+                          {park.amenities?.length > 0 && (
+                            <div className="flex flex-wrap gap-1 mt-1">
+                              {park.amenities.slice(0, 5).map((a, j) => (
+                                <span key={j} className="text-[10px] bg-stone-100 text-stone-500 px-1.5 py-0.5 rounded-full">{a}</span>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Notes */}
+                {parks.notes && (
+                  <div className="text-xs text-stone-500 bg-stone-50 p-2.5 rounded-lg mt-1 leading-relaxed">
+                    <strong className="text-xs uppercase tracking-wider">Note:</strong> {parks.notes}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {!parks && !parksLoading && (
+              <div className="flex items-center gap-3 py-4">
+                <span className="text-sm text-stone-400">No parks data available</span>
+                <button onClick={() => {
+                  setParksLoading(true);
+                  fetchNearbyParks(home.address, home.city, home.state, home.zip, home.lat, home.lng).then((r) => {
+                    setParksLoading(false);
+                    if (r && r.parks) { setParks(r); onUpdate(home.id, { parks: r }); }
+                  });
+                }} className="text-sm text-teal-600 font-medium hover:text-teal-700">Find parks nearby →</button>
               </div>
             )}
           </div>
@@ -2492,6 +2662,28 @@ function CompareScreen({ homes, compareList, toggleCompare, clearCompare, onOpen
               </span>
             </div>
           )}
+          {(a.parks || b.parks) && (
+            <div className="flex items-center text-sm pt-2 border-t border-sky-200/50">
+              <span className="flex-1 text-right font-medium">
+                {a.parks ? (
+                  <span className={`inline-flex items-center gap-1 text-xs font-semibold px-2 py-0.5 rounded-full ${a.parks.greenSpaceScore === "excellent" ? "bg-emerald-100 text-emerald-600" : a.parks.greenSpaceScore === "good" ? "bg-teal-100 text-teal-600" : "bg-amber-100 text-amber-600"}`}>
+                    {String.fromCodePoint(0x1F333)} {a.parks.parkCount1Mi || 0} parks {a.parks.nearestDistanceMi != null ? "\u00B7 " + a.parks.nearestDistanceMi.toFixed(1) + "mi" : ""}
+                  </span>
+                ) : <span className="text-stone-300">\u2014</span>}
+              </span>
+              <span className="w-28 md:w-36 text-center flex items-center justify-center gap-1">
+                <svg className="w-4 h-4 text-teal-500" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C8.5 2 6 5 6 8c0 2 1.5 3.5 3 4.5V22h6V12.5c1.5-1 3-2.5 3-4.5 0-3-2.5-6-6-6z"/></svg>
+                <span className="text-[10px] text-stone-400 uppercase tracking-wider font-semibold">Parks</span>
+              </span>
+              <span className="flex-1 font-medium">
+                {b.parks ? (
+                  <span className={`inline-flex items-center gap-1 text-xs font-semibold px-2 py-0.5 rounded-full ${b.parks.greenSpaceScore === "excellent" ? "bg-emerald-100 text-emerald-600" : b.parks.greenSpaceScore === "good" ? "bg-teal-100 text-teal-600" : "bg-amber-100 text-amber-600"}`}>
+                    {String.fromCodePoint(0x1F333)} {b.parks.parkCount1Mi || 0} parks {b.parks.nearestDistanceMi != null ? "\u00B7 " + b.parks.nearestDistanceMi.toFixed(1) + "mi" : ""}
+                  </span>
+                ) : <span className="text-stone-300">\u2014</span>}
+              </span>
+            </div>
+          )}
         </div>
 
         <div className="mt-3 pt-2 border-t border-sky-200/50 text-center text-xs text-stone-400">
@@ -2515,7 +2707,7 @@ function CompareScreen({ homes, compareList, toggleCompare, clearCompare, onOpen
 
       {/* Desktop: table */}
       <div className="hidden md:block overflow-x-auto rounded-xl border border-stone-200 shadow-sm bg-white">
-        <table className="w-full text-sm">
+        <table className="w-full text-sm min-w-[1400px]">
           <thead className="bg-stone-50/80 border-b border-stone-200">
             <tr>
               <th className="py-3 px-4 text-left text-xs font-semibold tracking-wider uppercase text-stone-400 w-44">Metric</th>
@@ -3023,7 +3215,7 @@ export default function CribsApp() {
   useEffect(() => {
     if (enrichingRef.current) return;
     // Skip if all homes already have data
-    const needsEnrich = homes.filter(h => !h.flood || !h.crime || !h.school);
+    const needsEnrich = homes.filter(h => !h.flood || !h.crime || !h.school || !h.parks);
     if (needsEnrich.length === 0) { setEnrichDone(true); return; }
     enrichingRef.current = true;
     let cancelled = false;
@@ -3038,6 +3230,7 @@ export default function CribsApp() {
         if (!h.flood) needs.push("flood");
         if (!h.crime) needs.push("crime");
         if (!h.school) needs.push("school");
+        if (!h.parks) needs.push("parks");
         if (needs.length === 0) continue;
 
         try {
@@ -3045,6 +3238,7 @@ export default function CribsApp() {
           if (needs.includes("flood")) promises.push(fetchFloodZone(h.address, h.city, h.state, h.zip).catch(() => null).then(r => ["flood", r]));
           if (needs.includes("crime")) promises.push(fetchCrime(h.address, h.city, h.state, h.zip).catch(() => null).then(r => ["crime", r]));
           if (needs.includes("school")) promises.push(fetchSchool(h.address, h.city, h.state, h.zip).catch(() => null).then(r => ["school", r]));
+          if (needs.includes("parks")) promises.push(fetchNearbyParks(h.address, h.city, h.state, h.zip, h.lat, h.lng).catch(() => null).then(r => ["parks", r]));
 
           const results = await Promise.all(promises);
           if (cancelled) return;
@@ -3054,6 +3248,7 @@ export default function CribsApp() {
             if (type === "flood" && data?.zone) updates.flood = data;
             if (type === "crime" && data?.risk) updates.crime = data;
             if (type === "school" && data?.schoolName) updates.school = data;
+            if (type === "parks" && data?.parks) updates.parks = data;
           }
           if (Object.keys(updates).length > 0) {
             setHomes(prev => prev.map(ph => ph.id === h.id ? { ...ph, ...updates } : ph));
@@ -3161,13 +3356,13 @@ export default function CribsApp() {
 
       {/* Desktop top nav — always visible */}
       <header className="hidden md:block border-b border-stone-200 bg-white/90 backdrop-blur-md sticky top-0 z-40 shadow-sm">
-        <div className="max-w-6xl mx-auto px-6 py-3 flex items-center justify-between">
+        <div className="max-w-[1600px] mx-auto px-6 py-3 flex items-center justify-between">
           <div className="flex items-center gap-2.5">
             <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-violet-500 via-fuchsia-500 to-pink-500 flex items-center justify-center shadow-lg shadow-fuchsia-200/50">
               <svg className="w-5 h-5" viewBox="0 0 24 24" fill="white"><path d="M12 3L2 12h3v8h5v-5h4v5h5v-8h3L12 3z"/></svg>
             </div>
             <h1 className="text-lg font-bold tracking-tight text-stone-800">CRIBS</h1>
-            <span className="text-[10px] text-stone-400 font-medium ml-1 self-end mb-0.5">v1.1.3</span>
+            <span className="text-[10px] text-stone-400 font-medium ml-1 self-end mb-0.5">v1.1.6</span>
           </div>
           <nav className="flex gap-1 bg-stone-100 rounded-lg p-0.5 border border-stone-200">
             <button onClick={goList} className={`px-4 py-2 text-sm font-medium rounded-md transition-colors ${screen === "list" || screen === "detail" ? "bg-white text-sky-600 shadow-sm" : "text-stone-500 hover:text-stone-700"}`}>Homes</button>
@@ -3179,7 +3374,7 @@ export default function CribsApp() {
         </div>
       </header>
 
-      <div className="max-w-6xl mx-auto">
+      <div className="max-w-[1600px] mx-auto">
         {screen === "list" && <HomeListScreen homes={homes} setHomes={setHomes} onOpenHome={openHome} compareList={compareList} toggleCompare={toggleCompare} onImport={handleImport} fin={fin} rateInfo={rateInfo} schoolFilter={schoolFilter} setSchoolFilter={setSchoolFilter} maxBudget={maxBudget} enrichDone={enrichDone} />}
         {screen === "detail" && activeHome && <HomeDetailScreen home={activeHome} onBack={goList} onUpdate={updateHome} compareList={compareList} toggleCompare={toggleCompare} fin={fin} navList={navList} onNavigate={navigateHome} allHomes={homes} soldComps={soldComps} onFilterBySchool={(name) => { setSchoolFilter(name); setScreen("list"); }} maxBudget={maxBudget} />}
         {screen === "compare" && <CompareScreen homes={homes} compareList={compareList} toggleCompare={toggleCompare} clearCompare={() => setCompareList([])} onOpenHome={openHome} fin={fin} />}
