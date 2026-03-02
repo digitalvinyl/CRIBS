@@ -153,36 +153,20 @@ function calcMaxBudget(fin) {
 }
 
 async function fetchLiveRate() {
-  // Check localStorage cache first (valid for 24h)
+  // Check localStorage cache first (valid for 6h)
   try {
     const cached = JSON.parse(localStorage.getItem("cribs_live_rate") || "null");
-    if (cached && cached.rate && Date.now() - cached.ts < 86400000) {
-      return { rate: cached.rate, source: cached.source || "Cached", asOf: cached.asOf };
+    if (cached && cached.rate && Date.now() - cached.ts < 21600000) {
+      return { rate: cached.rate, source: cached.source || "Freddie Mac PMMS", asOf: cached.asOf };
     }
   } catch {}
   try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 8000);
-    const res = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      signal: controller.signal,
-      body: JSON.stringify({
-        model: "claude-sonnet-4-20250514",
-        max_tokens: 1000,
-        system: "You are a data extraction tool. Return ONLY a JSON object with no other text, no markdown, no backticks. The JSON should have the shape: {\"rate\": <number>, \"source\": \"<source name>\", \"asOf\": \"<date string>\"}",
-        messages: [{ role: "user", content: "What is the current average US 30-year fixed mortgage rate? Search for the latest Freddie Mac PMMS rate. Return only the JSON." }],
-        tools: [{ type: "web_search_20250305", name: "web_search" }],
-      }),
-    });
-    clearTimeout(timeout);
+    // Call our Vercel serverless function (fetches from Freddie Mac)
+    const res = await fetch("/api/rate", { signal: AbortSignal.timeout(10000) });
     const data = await res.json();
-    const text = data.content?.map((b) => b.type === "text" ? b.text : "").join("") || "";
-    const clean = text.replace(/```json|```/g, "").trim();
-    const parsed = JSON.parse(clean);
-    if (parsed.rate && typeof parsed.rate === "number" && parsed.rate > 0 && parsed.rate < 20) {
-      try { localStorage.setItem("cribs_live_rate", JSON.stringify({ rate: parsed.rate, source: parsed.source, asOf: parsed.asOf, ts: Date.now() })); } catch {}
-      return parsed;
+    if (data.rate && typeof data.rate === "number" && data.rate > 0 && data.rate < 20) {
+      try { localStorage.setItem("cribs_live_rate", JSON.stringify({ rate: data.rate, source: data.source, asOf: data.asOf, ts: Date.now() })); } catch {}
+      return data;
     }
   } catch (e) { /* fall through */ }
   // Check cache as fallback (even if expired)
@@ -3183,7 +3167,7 @@ export default function CribsApp() {
               <svg className="w-5 h-5" viewBox="0 0 24 24" fill="white"><path d="M12 3L2 12h3v8h5v-5h4v5h5v-8h3L12 3z"/></svg>
             </div>
             <h1 className="text-lg font-bold tracking-tight text-stone-800">CRIBS</h1>
-            <span className="text-[10px] text-stone-400 font-medium ml-1 self-end mb-0.5">v1.1.2</span>
+            <span className="text-[10px] text-stone-400 font-medium ml-1 self-end mb-0.5">v1.1.3</span>
           </div>
           <nav className="flex gap-1 bg-stone-100 rounded-lg p-0.5 border border-stone-200">
             <button onClick={goList} className={`px-4 py-2 text-sm font-medium rounded-md transition-colors ${screen === "list" || screen === "detail" ? "bg-white text-sky-600 shadow-sm" : "text-stone-500 hover:text-stone-700"}`}>Homes</button>
