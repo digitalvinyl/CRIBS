@@ -1,6 +1,24 @@
-import React, { useState, useMemo, useRef, useEffect } from "react";
+import React, { useState, useMemo, useRef, useEffect, Component, createElement } from "react";
 
 /* ─── Helpers ────────────────────────────────────────────────────── */
+
+class ErrorBoundary extends Component {
+  constructor(props) { super(props); this.state = { error: null }; }
+  static getDerivedStateFromError(error) { return { error }; }
+  render() {
+    if (this.state.error) {
+      return createElement('div', { className: 'p-6 max-w-xl mx-auto mt-20 text-center' },
+        createElement('div', { className: 'bg-red-50 border border-red-200 rounded-2xl p-6' },
+          createElement('h2', { className: 'text-lg font-bold text-red-600 mb-2' }, 'Something went wrong'),
+          createElement('p', { className: 'text-sm text-stone-600 mb-3' }, String(this.state.error?.message || this.state.error)),
+          createElement('button', { className: 'px-4 py-2 bg-sky-500 text-white rounded-xl text-sm font-medium', onClick: () => this.setState({ error: null }) }, 'Try Again')
+        )
+      );
+    }
+    return this.props.children;
+  }
+}
+
 const fmt = (n) => (n != null && !isNaN(n) ? "$" + Number(n).toLocaleString("en-US", { maximumFractionDigits: 0 }) : "—");
 const fmtC = (n) => (n != null && !isNaN(n) ? (Math.abs(n) >= 1e6 ? "$" + (n / 1e6).toFixed(3) + "M" : fmt(n)) : "—");
 const fmtNum = (n) => (n != null && !isNaN(n) ? Number(n).toLocaleString("en-US", { maximumFractionDigits: 0 }) : "—");
@@ -2970,41 +2988,6 @@ function HomeDetailScreen({ home, onBack, onUpdate, onDelete, compareList, toggl
           </div>
         </div>
 
-        {/* Data Management */}
-        {(() => {
-          const fields = ["flood", "crime", "school", "parks", "groceries", "appraisal"];
-          const blanks = {};
-          let totalBlanks = 0;
-          for (const f of fields) { const n = homes.filter(h => !h[f]).length; blanks[f] = n; totalBlanks += n; }
-          const homesWithBlanks = homes.filter(h => fields.some(f => !h[f])).length;
-          return (
-            <div className="bg-white border border-stone-200 rounded-2xl p-4 anim-fade-up" style={{ animationDelay: '200ms' }}>
-              <h3 className="text-sm font-semibold text-stone-700 mb-3">Data Management</h3>
-              <div className="space-y-3">
-                <div className="grid grid-cols-3 gap-2">
-                  {fields.map(f => (
-                    <div key={f} className={`text-center p-2 rounded-xl border ${blanks[f] > 0 ? "bg-amber-50/50 border-amber-200/50" : "bg-teal-50/50 border-teal-200/50"}`}>
-                      <div className={`text-lg font-bold tabular-nums ${blanks[f] > 0 ? "text-amber-600" : "text-teal-600"}`}>{blanks[f] > 0 ? blanks[f] : <svg className="w-5 h-5 mx-auto" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M16.704 4.153a.75.75 0 01.143 1.052l-8 10.5a.75.75 0 01-1.127.075l-4.5-4.5a.75.75 0 011.06-1.06l3.894 3.893 7.48-9.817a.75.75 0 011.05-.143z" clipRule="evenodd" /></svg>}</div>
-                      <div className="text-[10px] text-stone-500 font-medium capitalize">{f}</div>
-                    </div>
-                  ))}
-                </div>
-                {totalBlanks > 0 ? (
-                  <div className="flex items-center justify-between">
-                    <p className="text-xs text-stone-500">{homesWithBlanks} home{homesWithBlanks !== 1 ? "s" : ""} with missing data ({totalBlanks} total blanks)</p>
-                    <button onClick={onTriggerEnrich}
-                      className="px-4 py-2 rounded-xl text-sm font-semibold bg-sky-500 text-white hover:bg-sky-600 active:bg-sky-700 shadow-sm shadow-sky-200 transition-colors flex items-center gap-2">
-                      <svg className="w-4 h-4" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z" clipRule="evenodd" /></svg>
-                      Fetch Missing
-                    </button>
-                  </div>
-                ) : (
-                  <p className="text-xs text-teal-600 font-medium text-center">All {homes.length} homes fully enriched</p>
-                )}
-              </div>
-            </div>
-          );
-        })()}
       </div>
     </div>
   );
@@ -3724,7 +3707,7 @@ export default function CribsApp() {
           // are from a pre-enrichment version, reset to baked-in defaults.
           const hasEnrichment = p.some(h => h.flood && h.crime);
           if (hasEnrichment) {
-            // v1.4.6 migration: clear old school/appraisal data from Anthropic API so it re-fetches from NCES/HCAD
+            // v1.4.8 migration: clear old school/appraisal data from Anthropic API so it re-fetches from NCES/HCAD
             const needsMigration = p.some(h => h.school?.ratingSource === "GreatSchools" || h.school?.nicheGrade || (h.appraisal && !h.appraisal.value) || (h.appraisal && h.appraisal.source !== "HCAD (Harris County Appraisal District)"));
             if (needsMigration) {
               const migrated = p.map(h => ({ ...h, school: null, appraisal: null }));
@@ -4046,7 +4029,7 @@ export default function CribsApp() {
               <svg className="w-5 h-5" viewBox="0 0 24 24" fill="white"><path d="M12 3L2 12h3v8h5v-5h4v5h5v-8h3L12 3z"/></svg>
             </div>
             <h1 className="text-lg font-bold tracking-tight text-stone-800">CRIBS</h1>
-            <span className="text-[10px] text-stone-400 font-medium ml-1 self-end mb-0.5">v1.4.6</span>
+            <span className="text-[10px] text-stone-400 font-medium ml-1 self-end mb-0.5">v1.4.8</span>
           </button>
           <nav className="flex gap-1 bg-stone-100 rounded-lg p-0.5 border border-stone-200">
             <button onClick={goList} className={`px-4 py-2 text-sm font-medium rounded-md transition-colors ${screen === "list" || screen === "detail" ? "bg-white text-sky-600 shadow-sm" : "text-stone-500 hover:text-stone-700"}`}>Homes</button>
@@ -4061,7 +4044,7 @@ export default function CribsApp() {
 
       <div className="max-w-[1600px] mx-auto">
         {screen === "list" && <HomeListScreen homes={homes} setHomes={setHomes} onOpenHome={openHome} compareList={compareList} toggleCompare={toggleCompare} onImport={handleImport} fin={fin} rateInfo={rateInfo} schoolFilter={schoolFilter} setSchoolFilter={setSchoolFilter} maxBudget={maxBudget} enrichDone={enrichDone} />}
-        {screen === "detail" && activeHome && <HomeDetailScreen home={activeHome} onBack={goList} onUpdate={updateHome} onDelete={(id) => { const found = homes.find(x => x.id === id); if (found) trackDeletion(found.address); setHomes((p) => p.filter((x) => x.id !== id)); }} compareList={compareList} toggleCompare={toggleCompare} fin={fin} navList={navList} onNavigate={navigateHome} allHomes={homes} soldComps={soldComps} onFilterBySchool={(name) => { setSchoolFilter(name); setScreen("list"); }} maxBudget={maxBudget} />}
+        {screen === "detail" && activeHome && <ErrorBoundary><HomeDetailScreen home={activeHome} onBack={goList} onUpdate={updateHome} onDelete={(id) => { const found = homes.find(x => x.id === id); if (found) trackDeletion(found.address); setHomes((p) => p.filter((x) => x.id !== id)); }} compareList={compareList} toggleCompare={toggleCompare} fin={fin} navList={navList} onNavigate={navigateHome} allHomes={homes} soldComps={soldComps} onFilterBySchool={(name) => { setSchoolFilter(name); setScreen("list"); }} maxBudget={maxBudget} /></ErrorBoundary>}
         {screen === "compare" && <CompareScreen homes={homes} compareList={compareList} toggleCompare={toggleCompare} clearCompare={() => setCompareList([])} onOpenHome={openHome} fin={fin} />}
         {screen === "settings" && <SettingsScreen fin={fin} updateFin={updateFin} liveRate={liveRate} rateInfo={rateInfo} homes={homes} setHomes={setHomes} soldComps={soldComps} setSoldComps={setSoldComps} darkMode={darkMode} setDarkMode={setDarkMode} onTriggerEnrich={() => { enrichingRef.current = false; setEnrichDone(false); setEnrichTrigger(t => t + 1); }} enrichDone={enrichDone} />}
       </div>
