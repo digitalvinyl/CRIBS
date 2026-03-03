@@ -5,6 +5,7 @@ const fmt = (n) => (n != null && !isNaN(n) ? "$" + Number(n).toLocaleString("en-
 const fmtC = (n) => (n != null && !isNaN(n) ? (Math.abs(n) >= 1e6 ? "$" + (n / 1e6).toFixed(3) + "M" : fmt(n)) : "—");
 const fmtNum = (n) => (n != null && !isNaN(n) ? Number(n).toLocaleString("en-US", { maximumFractionDigits: 0 }) : "—");
 const parseNum = (v) => { if (v == null || v === "") return null; const n = parseFloat(String(v).replace(/[$,%\s]/g, "")); return isNaN(n) ? null : n; };
+const normalizeAddr = (a) => (a || "").toLowerCase().replace(/[^a-z0-9]/g, "");
 
 const RATING_CATS = ["Kitchen", "Living Area", "Master", "Office", "Bedrooms"];
 const emptyRatings = () => ({ kitchen: 0, living: 0, master: 0, office: 0, bedrooms: 0 });
@@ -687,14 +688,14 @@ const StarIcon = ({ filled, ...p }) => (
 );
 
 /* ─── Grocery Map (Leaflet + CartoDB Voyager) ─────────────────────── */
-function GroceryMap({ home, groceries, className = "" }) {
+function GroceryMap({ home, groceries, className = "", visible = true }) {
   const mapRef = useRef(null);
   const mapInstance = useRef(null);
+  const boundsRef = useRef(null);
 
   useEffect(() => {
-    if (!home?.lat || !home?.lng || !groceries) return;
+    if (!visible || !home?.lat || !home?.lng || !groceries) return;
 
-    // Load Leaflet CSS
     if (!document.querySelector('link[href*="leaflet"]')) {
       const link = document.createElement("link");
       link.rel = "stylesheet";
@@ -702,7 +703,6 @@ function GroceryMap({ home, groceries, className = "" }) {
       document.head.appendChild(link);
     }
 
-    // Load Leaflet JS then init map
     const init = (L) => {
       if (!mapRef.current) return;
       if (mapInstance.current) { mapInstance.current.remove(); mapInstance.current = null; }
@@ -711,7 +711,6 @@ function GroceryMap({ home, groceries, className = "" }) {
       L.control.zoom({ position: "topright" }).addTo(map);
       const tileLayer = L.tileLayer("https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png", { maxZoom: 18, subdomains: "abcd" });
       tileLayer.on("tileerror", () => {
-        // Fallback to OSM if CartoDB tiles fail
         if (!map._osfallback) {
           map._osfallback = true;
           tileLayer.remove();
@@ -737,7 +736,7 @@ function GroceryMap({ home, groceries, className = "" }) {
         { key: "heb", label: "H-E-B", emoji: "🛒", bg: "#fef2f2", border: "#dc2626" },
         { key: "costco", label: "Costco", emoji: "🏪", bg: "#eff6ff", border: "#2563eb" },
         { key: "wholefoods", label: "Whole Foods", emoji: "🥬", bg: "#f0fdf4", border: "#15803d" },
-        { key: "traderjoes", label: "Trader Joe's", emoji: "🍊", bg: "#fff7ed", border: "#ea580c" },
+        { key: "traderjoes", label: "Trader Joe\'s", emoji: "🍊", bg: "#fff7ed", border: "#ea580c" },
       ];
 
       chains.forEach(({ key, label, emoji, bg, border }) => {
@@ -749,11 +748,15 @@ function GroceryMap({ home, groceries, className = "" }) {
         bounds.extend([store.lat, store.lng]);
       });
 
-      map.fitBounds(bounds.pad(0.15));
+      boundsRef.current = bounds;
       mapInstance.current = map;
 
-      // Fix tile rendering after container resize
-      setTimeout(() => map.invalidateSize(), 100);
+      requestAnimationFrame(() => {
+        if (map && mapRef.current) {
+          map.invalidateSize();
+          map.fitBounds(bounds.pad(0.15));
+        }
+      });
     };
 
     if (window.L) { init(window.L); return; }
@@ -763,12 +766,7 @@ function GroceryMap({ home, groceries, className = "" }) {
     document.head.appendChild(script);
 
     return () => { if (mapInstance.current) { mapInstance.current.remove(); mapInstance.current = null; } };
-  }, [home?.lat, home?.lng, groceries]);
-
-  // Re-invalidate on visibility change (mobile toggle)
-  useEffect(() => {
-    if (mapInstance.current) setTimeout(() => mapInstance.current.invalidateSize(), 50);
-  });
+  }, [visible, home?.lat, home?.lng, groceries]);
 
   return <div ref={mapRef} className={className} style={{ minHeight: 220, borderRadius: 12, zIndex: 0 }} />;
 }
@@ -2207,7 +2205,7 @@ function HomeDetailScreen({ home, onBack, onUpdate, onDelete, compareList, toggl
           </div>
         </div>
 
-        {/* ── Groceries ───────────────────────────────────────────────── */}
+        {/* ── {/* ── Groceries ─────────────────────────────────────────────────────────── */}
         <div className="bg-white border border-stone-200 rounded-2xl overflow-hidden anim-fade-up" style={{ animationDelay: '275ms' }}>
           <div className="p-4">
             <div className="flex items-center gap-2 mb-3">
@@ -2253,8 +2251,8 @@ function HomeDetailScreen({ home, onBack, onUpdate, onDelete, compareList, toggl
                     })}
                   </div>
                   {/* Map — always visible desktop, toggle mobile */}
-                  <div className={`md:w-3/5 md:block ${groceryMapOpen ? "block" : "hidden"}`}>
-                    <GroceryMap home={home} groceries={groceries} className="w-full h-full min-h-[220px] md:min-h-[260px] rounded-xl border border-stone-200 overflow-hidden" />
+                  <div className={`md:w-3/5 ${groceryMapOpen ? "block" : "hidden md:block"}`}>
+                    <GroceryMap home={home} groceries={groceries} visible={groceryMapOpen || window.innerWidth >= 768} className="w-full h-full min-h-[220px] md:min-h-[260px] rounded-xl border border-stone-200 overflow-hidden" />
                   </div>
                 </div>
               );
@@ -2667,6 +2665,133 @@ function HomeDetailScreen({ home, onBack, onUpdate, onDelete, compareList, toggl
             </div>
           </div>
         )}
+
+        {/* ── Value Score Breakdown ──────────────────────────────────── */}
+        <div className="bg-white border border-stone-200 rounded-2xl overflow-hidden anim-fade-up" style={{ animationDelay: '230ms' }}>
+          <div className="p-4">
+            {(() => {
+              const vs = calcValueScore(home, allHomes);
+              const color = vs >= 70 ? "text-teal-600" : vs >= 50 ? "text-amber-600" : "text-orange-500";
+              const bgColor = vs >= 70 ? "bg-teal-50 border-teal-200" : vs >= 50 ? "bg-amber-50 border-amber-200" : "bg-orange-50 border-orange-200";
+              const barColor = vs >= 70 ? "bg-teal-500" : vs >= 50 ? "bg-amber-500" : "bg-orange-500";
+              const label = vs >= 80 ? "Excellent" : vs >= 70 ? "Strong" : vs >= 60 ? "Good" : vs >= 50 ? "Average" : vs >= 40 ? "Below Avg" : "Weak";
+
+              // Recalculate each component for breakdown
+              const components = [];
+
+              // Price vs Appraisal
+              if (home.appraisal?.value && home.price) {
+                const gap = (home.price - home.appraisal.value) / home.appraisal.value;
+                const pts = Math.max(-20, Math.min(20, -gap * 100));
+                const pct = ((gap) * 100).toFixed(1);
+                components.push({ label: "Price vs Appraisal", pts, max: 20, detail: gap > 0 ? `${Math.abs(pct)}% above appraisal` : `${Math.abs(pct)}% below appraisal`, icon: "💰" });
+              } else {
+                components.push({ label: "Price vs Appraisal", pts: 0, max: 20, detail: "No appraisal data", icon: "💰", missing: true });
+              }
+
+              // $/sqft vs median
+              if (home.ppsf && allHomes.length > 3) {
+                const ppsfList = allHomes.filter(x => x.ppsf).map(x => x.ppsf).sort((a, b) => a - b);
+                const median = ppsfList[Math.floor(ppsfList.length / 2)];
+                if (median) {
+                  const diff = (home.ppsf - median) / median;
+                  const pts = Math.max(-15, Math.min(15, -diff * 50));
+                  components.push({ label: "$/sqft vs Median", pts, max: 15, detail: `$${home.ppsf}/sqft vs $${median}/sqft median`, icon: "📐" });
+                }
+              } else {
+                components.push({ label: "$/sqft vs Median", pts: 0, max: 15, detail: "Need more homes to compare", icon: "📐", missing: true });
+              }
+
+              // School
+              if (home.school?.rating != null) {
+                const pts = (home.school.rating / 10) * 15;
+                components.push({ label: "School Rating", pts, max: 15, detail: `${home.school.rating}/10 — ${home.school.name || "nearby school"}`, icon: "🏫" });
+              } else {
+                components.push({ label: "School Rating", pts: 0, max: 15, detail: "No school data", icon: "🏫", missing: true });
+              }
+
+              // Flood
+              {
+                const pts = home.flood?.risk === "high" ? -12 : home.flood?.risk === "moderate" ? -5 : home.flood?.risk === "low" ? 3 : 0;
+                const riskLabel = home.flood?.risk ? (home.flood.risk.charAt(0).toUpperCase() + home.flood.risk.slice(1)) + " risk" : "No data";
+                const zone = home.flood?.zone ? ` (Zone ${home.flood.zone})` : "";
+                components.push({ label: "Flood Risk", pts, max: 12, min: -12, detail: riskLabel + zone, icon: "💧", missing: !home.flood });
+              }
+
+              // Crime
+              {
+                const pts = home.crime?.risk === "high" ? -8 : home.crime?.risk === "low" ? 4 : 0;
+                const riskLabel = home.crime?.risk ? (home.crime.risk.charAt(0).toUpperCase() + home.crime.risk.slice(1)) + " risk" : "No data";
+                components.push({ label: "Crime", pts, max: 8, min: -8, detail: riskLabel, icon: "🛡️", missing: !home.crime });
+              }
+
+              // Parks
+              {
+                let pts = 0;
+                if (home.parks?.greenSpaceScore === "excellent") pts += 8;
+                else if (home.parks?.greenSpaceScore === "good") pts += 5;
+                else if (home.parks?.greenSpaceScore === "fair") pts += 2;
+                if (home.parks?.hasTrail) pts += 2;
+                if (home.parks?.hasPlayground) pts += 1;
+                const details = home.parks ? [home.parks.greenSpaceScore, home.parks.hasTrail && "trail", home.parks.hasPlayground && "playground"].filter(Boolean).join(", ") : "No data";
+                components.push({ label: "Parks & Green Space", pts, max: 11, detail: details || "None nearby", icon: "🌳", missing: !home.parks });
+              }
+
+              // DOM
+              {
+                const dom = home.dom || 0;
+                const pts = dom > 90 ? 10 : dom > 60 ? 7 : dom > 30 ? 4 : dom > 14 ? 2 : 0;
+                components.push({ label: "Days on Market", pts, max: 10, detail: dom ? `${dom} days — ${dom > 90 ? "strong leverage" : dom > 60 ? "good leverage" : dom > 30 ? "some leverage" : dom > 14 ? "slight leverage" : "fresh listing"}` : "Unknown", icon: "📅", missing: !dom });
+              }
+
+              return (
+                <div>
+                  <div className="flex items-center gap-2 mb-3">
+                    <svg className="w-4 h-4 text-teal-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" /></svg>
+                    <h3 className="text-sm font-semibold text-stone-700">Value Score</h3>
+                  </div>
+                  {/* Hero score */}
+                  <div className={`rounded-xl border p-4 mb-4 ${bgColor}`}>
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="flex items-baseline gap-2">
+                        <span className={`text-3xl font-bold tabular-nums ${color}`}>{vs}</span>
+                        <span className="text-sm text-stone-500">/ 100</span>
+                      </div>
+                      <span className={`text-sm font-semibold ${color}`}>{label}</span>
+                    </div>
+                    <div className="w-full bg-white/60 rounded-full h-2.5">
+                      <div className={`h-2.5 rounded-full transition-all duration-500 ${barColor}`} style={{ width: `${vs}%` }} />
+                    </div>
+                    <p className="text-[10px] text-stone-400 mt-2">Composite score from pricing, location, schools, and market factors. Base starts at 50.</p>
+                  </div>
+                  {/* Component breakdown */}
+                  <div className="space-y-2">
+                    {components.map((c, i) => {
+                      const ptsColor = c.missing ? "text-stone-300" : c.pts > 0 ? "text-teal-600" : c.pts < 0 ? "text-red-500" : "text-stone-400";
+                      const ptsStr = c.pts > 0 ? `+${c.pts.toFixed(1)}` : c.pts.toFixed(1);
+                      const barW = c.max > 0 ? Math.abs(c.pts) / c.max * 100 : 0;
+                      return (
+                        <div key={i} className={`flex items-center gap-3 py-2 px-3 rounded-lg ${c.missing ? "bg-stone-50/50" : "bg-stone-50"}`}>
+                          <span className="text-sm flex-shrink-0">{c.icon}</span>
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center justify-between mb-0.5">
+                              <span className="text-xs font-semibold text-stone-700">{c.label}</span>
+                              <span className={`text-xs font-bold tabular-nums ${ptsColor}`}>{c.missing ? "—" : ptsStr}</span>
+                            </div>
+                            <div className="w-full bg-stone-200/50 rounded-full h-1.5 mb-1">
+                              {!c.missing && <div className={`h-1.5 rounded-full ${c.pts >= 0 ? "bg-teal-400" : "bg-red-400"}`} style={{ width: `${Math.min(100, barW)}%` }} />}
+                            </div>
+                            <p className={`text-[10px] ${c.missing ? "text-stone-300" : "text-stone-400"}`}>{c.detail}</p>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })()}
+          </div>
+        </div>
 
         {/* ── Financial Model ─────────────────────────────────────── */}
         <div className="bg-white border border-stone-200 rounded-2xl overflow-hidden anim-fade-up" style={{ animationDelay: '240ms' }}>
@@ -3724,12 +3849,13 @@ export default function CribsApp() {
   };
 
   const handleImport = (newHomes) => {
-    const byAddr = new Map(homes.map((h) => [h.address?.toLowerCase(), h]));
+    const byAddr = new Map(homes.map((h) => [normalizeAddr(h.address), h]));
     const newList = [], dupeList = [], deletedList = [];
     for (const incoming of newHomes) {
-      const key = incoming.address?.toLowerCase();
+      const key = normalizeAddr(incoming.address);
+      if (!key) { newList.push(incoming); continue; }
       if (byAddr.has(key)) { dupeList.push(incoming); }
-      else if (deletedAddresses.includes(key)) { deletedList.push(incoming); }
+      else if (deletedAddresses.some(a => normalizeAddr(a) === key)) { deletedList.push(incoming); }
       else { newList.push(incoming); }
     }
     setImportDialog({ newList, dupeList, deletedList, includeDeleted: false });
@@ -3739,10 +3865,10 @@ export default function CribsApp() {
     if (!importDialog) return;
     const { newList, dupeList, deletedList, includeDeleted } = importDialog;
     setHomes((prev) => {
-      const byAddr = new Map(prev.map((h) => [h.address?.toLowerCase(), h]));
+      const byAddr = new Map(prev.map((h) => [normalizeAddr(h.address), h]));
       const merged = [...prev];
       for (const incoming of dupeList) {
-        const key = incoming.address?.toLowerCase();
+        const key = normalizeAddr(incoming.address);
         const existing = byAddr.get(key);
         if (existing) {
           const idx = merged.findIndex((h) => h.id === existing.id);
@@ -3752,8 +3878,8 @@ export default function CribsApp() {
       for (const h of newList) { merged.push(h); }
       if (includeDeleted) {
         for (const h of deletedList) { merged.push(h); }
-        const removedKeys = new Set(deletedList.map(d => d.address?.toLowerCase()));
-        const updated = deletedAddresses.filter(a => !removedKeys.has(a));
+        const removedKeys = new Set(deletedList.map(d => normalizeAddr(d.address)));
+        const updated = deletedAddresses.filter(a => !removedKeys.has(normalizeAddr(a)));
         localStorage.setItem("cribs_deleted", JSON.stringify(updated));
         setDeletedAddresses(updated);
       }
@@ -3776,6 +3902,10 @@ export default function CribsApp() {
   };
 
   const openHome = (h, filteredList) => {
+    if (!h.viewed) {
+      setHomes((prev) => prev.map((x) => x.id === h.id ? { ...x, viewed: true } : x));
+      h = { ...h, viewed: true };
+    }
     setActiveHome(h);
     if (filteredList) setNavList(filteredList.map(x => x.id));
     setScreen("detail");
@@ -3788,8 +3918,14 @@ export default function CribsApp() {
     if (idx === -1) return;
     const nextIdx = idx + dir;
     if (nextIdx < 0 || nextIdx >= navList.length) return;
-    const nextHome = homes.find(h => h.id === navList[nextIdx]);
-    if (nextHome) { setActiveHome(nextHome); window.scrollTo(0, 0); }
+    let nextHome = homes.find(h => h.id === navList[nextIdx]);
+    if (nextHome) {
+      if (!nextHome.viewed) {
+        setHomes((prev) => prev.map((x) => x.id === nextHome.id ? { ...x, viewed: true } : x));
+        nextHome = { ...nextHome, viewed: true };
+      }
+      setActiveHome(nextHome); window.scrollTo(0, 0);
+    }
   };
 
   useEffect(() => {
@@ -3811,7 +3947,7 @@ export default function CribsApp() {
               <svg className="w-5 h-5" viewBox="0 0 24 24" fill="white"><path d="M12 3L2 12h3v8h5v-5h4v5h5v-8h3L12 3z"/></svg>
             </div>
             <h1 className="text-lg font-bold tracking-tight text-stone-800">CRIBS</h1>
-            <span className="text-[10px] text-stone-400 font-medium ml-1 self-end mb-0.5">v1.3.6</span>
+            <span className="text-[10px] text-stone-400 font-medium ml-1 self-end mb-0.5">v1.4.1</span>
           </button>
           <nav className="flex gap-1 bg-stone-100 rounded-lg p-0.5 border border-stone-200">
             <button onClick={goList} className={`px-4 py-2 text-sm font-medium rounded-md transition-colors ${screen === "list" || screen === "detail" ? "bg-white text-sky-600 shadow-sm" : "text-stone-500 hover:text-stone-700"}`}>Homes</button>
