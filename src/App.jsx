@@ -348,7 +348,15 @@ async function fetchSchool(address, city, state, zip, lat, lng) {
 }
 
 async function fetchNearbyParks(address, city, state, zip, lat, lng) {
-  if (!lat || !lng) return null;
+  if (!lat || !lng) {
+    try {
+      const q = encodeURIComponent(address + ', ' + city + ', ' + state + ' ' + (zip || ''));
+      const geoRes = await fetch('https://nominatim.openstreetmap.org/search?q=' + q + '&format=json&limit=1', { headers: { 'User-Agent': 'CRIBSApp/1.0' }, signal: AbortSignal.timeout(6000) });
+      const geoData = await geoRes.json();
+      if (geoData?.[0]) { lat = parseFloat(geoData[0].lat); lng = parseFloat(geoData[0].lon); }
+    } catch (e) { /* geocode failed */ }
+  }
+  if (!lat || !lng) return generateParks(lat, lng);
   try {
     const radius = 1609; // 1 mile in meters
     const query = `[out:json][timeout:10];(nwr["leisure"="park"](around:${radius},${lat},${lng});nwr["leisure"="nature_reserve"](around:${radius},${lat},${lng});nwr["leisure"="playground"](around:${radius},${lat},${lng});way["highway"~"path|cycleway"]["name"](around:${radius},${lat},${lng}););out center tags qt 40;`;
@@ -421,7 +429,7 @@ async function fetchNearbyParks(address, city, state, zip, lat, lng) {
     const nearest = top[0] || null;
     const score = count >= 4 ? "excellent" : count >= 2 ? "good" : count >= 1 ? "fair" : "poor";
 
-    return {
+    const result = {
       parks: top,
       nearestParkName: nearest?.name || null,
       nearestDistanceMi: nearest?.distanceMi ?? null,
@@ -431,6 +439,8 @@ async function fetchNearbyParks(address, city, state, zip, lat, lng) {
       greenSpaceScore: score,
       notes: count > 0 ? `${count} green space${count !== 1 ? "s" : ""} within 1 mile. Nearest: ${nearest?.name} (${nearest?.distanceMi} mi).` : "No parks found within 1 mile.",
     };
+    // If Overpass found parks, return; otherwise fall through to hardcoded fallback
+    if (count > 0) return result;
   } catch (e) { /* Overpass failed, use known park locations */ }
   return generateParks(lat, lng);
 }
@@ -522,8 +532,18 @@ function generateGroceries(lat, lng) {
   return result;
 }
 
-async function fetchNearbyGroceries(lat, lng) {
-  if (!lat || !lng) return null;
+async function fetchNearbyGroceries(lat, lng, address, city, state, zip) {
+  if (!lat || !lng) {
+    if (address && city && state) {
+      try {
+        const q = encodeURIComponent(address + ', ' + city + ', ' + state + ' ' + (zip || ''));
+        const geoRes = await fetch('https://nominatim.openstreetmap.org/search?q=' + q + '&format=json&limit=1', { headers: { 'User-Agent': 'CRIBSApp/1.0' }, signal: AbortSignal.timeout(6000) });
+        const geoData = await geoRes.json();
+        if (geoData?.[0]) { lat = parseFloat(geoData[0].lat); lng = parseFloat(geoData[0].lon); }
+      } catch (e) { /* geocode failed */ }
+    }
+  }
+  if (!lat || !lng) return generateGroceries(lat, lng);
   try {
     const radius = 16093; // 10 miles in meters
     const query = `[out:json][timeout:10];(nwr["shop"~"supermarket"]["name"~"H-E-B|HEB",i](around:${radius},${lat},${lng});nwr["shop"~"supermarket"]["name"~"Costco",i](around:${radius},${lat},${lng});nwr["shop"~"supermarket"]["name"~"Whole Foods",i](around:${radius},${lat},${lng});nwr["shop"~"supermarket"]["name"~"Trader Joe",i](around:${radius},${lat},${lng}););out center tags qt;`;
@@ -1672,7 +1692,7 @@ function HomeDetailScreen({ home, onBack, onUpdate, onDelete, compareList, toggl
     if (!home.lat || !home.lng) return;
     let cancelled = false;
     setGroceriesLoading(true);
-    fetchNearbyGroceries(home.lat, home.lng).then((result) => {
+    fetchNearbyGroceries(home.lat, home.lng, home.address, home.city, home.state, home.zip).then((result) => {
       if (cancelled) return;
       setGroceriesLoading(false);
       if (result) { setGroceries(result); onUpdate(home.id, { groceries: result }); }
@@ -2290,7 +2310,7 @@ function HomeDetailScreen({ home, onBack, onUpdate, onDelete, compareList, toggl
                 <button onClick={() => {
                   if (!home.lat || !home.lng) return;
                   setGroceriesLoading(true);
-                  fetchNearbyGroceries(home.lat, home.lng).then((r) => {
+                  fetchNearbyGroceries(home.lat, home.lng, home.address, home.city, home.state, home.zip).then((r) => {
                     setGroceriesLoading(false);
                     if (r) { setGroceries(r); onUpdate(home.id, { groceries: r }); }
                   });
@@ -2949,6 +2969,42 @@ function HomeDetailScreen({ home, onBack, onUpdate, onDelete, compareList, toggl
             </div>
           </div>
         </div>
+
+        {/* Data Management */}
+        {(() => {
+          const fields = ["flood", "crime", "school", "parks", "groceries", "appraisal"];
+          const blanks = {};
+          let totalBlanks = 0;
+          for (const f of fields) { const n = homes.filter(h => !h[f]).length; blanks[f] = n; totalBlanks += n; }
+          const homesWithBlanks = homes.filter(h => fields.some(f => !h[f])).length;
+          return (
+            <div className="bg-white border border-stone-200 rounded-2xl p-4 anim-fade-up" style={{ animationDelay: '200ms' }}>
+              <h3 className="text-sm font-semibold text-stone-700 mb-3">Data Management</h3>
+              <div className="space-y-3">
+                <div className="grid grid-cols-3 gap-2">
+                  {fields.map(f => (
+                    <div key={f} className={`text-center p-2 rounded-xl border ${blanks[f] > 0 ? "bg-amber-50/50 border-amber-200/50" : "bg-teal-50/50 border-teal-200/50"}`}>
+                      <div className={`text-lg font-bold tabular-nums ${blanks[f] > 0 ? "text-amber-600" : "text-teal-600"}`}>{blanks[f] > 0 ? blanks[f] : <svg className="w-5 h-5 mx-auto" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M16.704 4.153a.75.75 0 01.143 1.052l-8 10.5a.75.75 0 01-1.127.075l-4.5-4.5a.75.75 0 011.06-1.06l3.894 3.893 7.48-9.817a.75.75 0 011.05-.143z" clipRule="evenodd" /></svg>}</div>
+                      <div className="text-[10px] text-stone-500 font-medium capitalize">{f}</div>
+                    </div>
+                  ))}
+                </div>
+                {totalBlanks > 0 ? (
+                  <div className="flex items-center justify-between">
+                    <p className="text-xs text-stone-500">{homesWithBlanks} home{homesWithBlanks !== 1 ? "s" : ""} with missing data ({totalBlanks} total blanks)</p>
+                    <button onClick={onTriggerEnrich}
+                      className="px-4 py-2 rounded-xl text-sm font-semibold bg-sky-500 text-white hover:bg-sky-600 active:bg-sky-700 shadow-sm shadow-sky-200 transition-colors flex items-center gap-2">
+                      <svg className="w-4 h-4" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z" clipRule="evenodd" /></svg>
+                      Fetch Missing
+                    </button>
+                  </div>
+                ) : (
+                  <p className="text-xs text-teal-600 font-medium text-center">All {homes.length} homes fully enriched</p>
+                )}
+              </div>
+            </div>
+          );
+        })()}
       </div>
     </div>
   );
@@ -3311,7 +3367,7 @@ function CompareScreen({ homes, compareList, toggleCompare, clearCompare, onOpen
 /* ═══════════════════════════════════════════════════════════════════
    SCREEN: Settings
    ═══════════════════════════════════════════════════════════════════ */
-function SettingsScreen({ fin, updateFin, liveRate, rateInfo, homes = [], setHomes, soldComps = [], setSoldComps, darkMode, setDarkMode }) {
+function SettingsScreen({ fin, updateFin, liveRate, rateInfo, homes = [], setHomes, soldComps = [], setSoldComps, darkMode, setDarkMode, onTriggerEnrich, enrichDone }) {
   const fileRef = useRef();
   const handleSoldFile = async (file) => {
     const mod = await import("papaparse");
@@ -3668,7 +3724,7 @@ export default function CribsApp() {
           // are from a pre-enrichment version, reset to baked-in defaults.
           const hasEnrichment = p.some(h => h.flood && h.crime);
           if (hasEnrichment) {
-            // v1.4.2 migration: clear old school/appraisal data from Anthropic API so it re-fetches from NCES/HCAD
+            // v1.4.4 migration: clear old school/appraisal data from Anthropic API so it re-fetches from NCES/HCAD
             const needsMigration = p.some(h => h.school?.ratingSource === "GreatSchools" || h.school?.nicheGrade || (h.appraisal && h.appraisal.source !== "HCAD (Harris County Appraisal District)"));
             if (needsMigration) {
               const migrated = p.map(h => ({ ...h, school: null, appraisal: null }));
@@ -3808,10 +3864,12 @@ export default function CribsApp() {
   // Batch-fetch external data (flood, crime, school) for homes missing data
   const enrichingRef = useRef(false);
   const [enrichDone, setEnrichDone] = useState(false);
+  const [enrichTrigger, setEnrichTrigger] = useState(0);
+  const unenrichedCount = homes.filter(h => !h.flood || !h.crime || !h.school || !h.parks || !h.groceries || !h.appraisal).length;
   useEffect(() => {
     if (enrichingRef.current) return;
     // Skip if all homes already have data
-    const needsEnrich = homes.filter(h => !h.flood || !h.crime || !h.school || !h.parks || !h.groceries);
+    const needsEnrich = homes.filter(h => !h.flood || !h.crime || !h.school || !h.parks || !h.groceries || !h.appraisal);
     if (needsEnrich.length === 0) { setEnrichDone(true); return; }
     enrichingRef.current = true;
     let cancelled = false;
@@ -3828,15 +3886,17 @@ export default function CribsApp() {
         if (!h.school) needs.push("school");
         if (!h.parks) needs.push("parks");
         if (!h.groceries) needs.push("groceries");
+        if (!h.appraisal) needs.push("appraisal");
         if (needs.length === 0) continue;
 
         try {
           const promises = [];
           if (needs.includes("flood")) promises.push(fetchFloodZone(h.address, h.city, h.state, h.zip, h.lat, h.lng).catch(() => null).then(r => ["flood", r]));
           if (needs.includes("crime")) promises.push(fetchCrime(h.address, h.city, h.state, h.zip, h.lat, h.lng).catch(() => null).then(r => ["crime", r]));
-          if (needs.includes("school")) promises.push(fetchSchool(h.address, h.city, h.state, h.zip).catch(() => null).then(r => ["school", r]));
+          if (needs.includes("school")) promises.push(fetchSchool(h.address, h.city, h.state, h.zip, h.lat, h.lng).catch(() => null).then(r => ["school", r]));
           if (needs.includes("parks")) promises.push(fetchNearbyParks(h.address, h.city, h.state, h.zip, h.lat, h.lng).catch(() => null).then(r => ["parks", r]));
-          if (needs.includes("groceries")) promises.push(fetchNearbyGroceries(h.lat, h.lng).catch(() => null).then(r => ["groceries", r]));
+          if (needs.includes("groceries")) promises.push(fetchNearbyGroceries(h.lat, h.lng, h.address, h.city, h.state, h.zip).catch(() => null).then(r => ["groceries", r]));
+          if (needs.includes("appraisal")) promises.push(fetchAppraisal(h.address, h.city, h.state, h.lat, h.lng).catch(() => null).then(r => ["appraisal", r]));
 
           const results = await Promise.all(promises);
           if (cancelled) return;
@@ -3848,6 +3908,7 @@ export default function CribsApp() {
             if (type === "school" && data?.schoolName) updates.school = data;
             if (type === "parks" && data?.parks) updates.parks = data;
             if (type === "groceries" && data) updates.groceries = data;
+            if (type === "appraisal" && data?.appraisalValue) updates.appraisal = data;
           }
           if (Object.keys(updates).length > 0) {
             setHomes(prev => prev.map(ph => ph.id === h.id ? { ...ph, ...updates } : ph));
@@ -3865,10 +3926,10 @@ export default function CribsApp() {
 
     // Snapshot current homes for iteration. Also set a safety timeout
     // in case API is unreachable (no key on Vercel).
-    const safetyTimeout = setTimeout(() => { if (!cancelled) setEnrichDone(true); }, 15000);
-    enrich([...homes]).then(() => { clearTimeout(safetyTimeout); if (!cancelled) setEnrichDone(true); });
-    return () => { cancelled = true; clearTimeout(safetyTimeout); };
-  }, []);
+    const safetyTimeout = setTimeout(() => { if (!cancelled) { setEnrichDone(true); enrichingRef.current = false; } }, 60000);
+    enrich([...homes]).then(() => { clearTimeout(safetyTimeout); if (!cancelled) { setEnrichDone(true); enrichingRef.current = false; } });
+    return () => { cancelled = true; clearTimeout(safetyTimeout); enrichingRef.current = false; };
+  }, [unenrichedCount, enrichTrigger]);
 
   const [importDialog, setImportDialog] = useState(null);
   const [deletedAddresses, setDeletedAddresses] = useState(() => {
@@ -3982,7 +4043,7 @@ export default function CribsApp() {
               <svg className="w-5 h-5" viewBox="0 0 24 24" fill="white"><path d="M12 3L2 12h3v8h5v-5h4v5h5v-8h3L12 3z"/></svg>
             </div>
             <h1 className="text-lg font-bold tracking-tight text-stone-800">CRIBS</h1>
-            <span className="text-[10px] text-stone-400 font-medium ml-1 self-end mb-0.5">v1.4.2</span>
+            <span className="text-[10px] text-stone-400 font-medium ml-1 self-end mb-0.5">v1.4.4</span>
           </button>
           <nav className="flex gap-1 bg-stone-100 rounded-lg p-0.5 border border-stone-200">
             <button onClick={goList} className={`px-4 py-2 text-sm font-medium rounded-md transition-colors ${screen === "list" || screen === "detail" ? "bg-white text-sky-600 shadow-sm" : "text-stone-500 hover:text-stone-700"}`}>Homes</button>
@@ -3999,7 +4060,7 @@ export default function CribsApp() {
         {screen === "list" && <HomeListScreen homes={homes} setHomes={setHomes} onOpenHome={openHome} compareList={compareList} toggleCompare={toggleCompare} onImport={handleImport} fin={fin} rateInfo={rateInfo} schoolFilter={schoolFilter} setSchoolFilter={setSchoolFilter} maxBudget={maxBudget} enrichDone={enrichDone} />}
         {screen === "detail" && activeHome && <HomeDetailScreen home={activeHome} onBack={goList} onUpdate={updateHome} onDelete={(id) => { const found = homes.find(x => x.id === id); if (found) trackDeletion(found.address); setHomes((p) => p.filter((x) => x.id !== id)); }} compareList={compareList} toggleCompare={toggleCompare} fin={fin} navList={navList} onNavigate={navigateHome} allHomes={homes} soldComps={soldComps} onFilterBySchool={(name) => { setSchoolFilter(name); setScreen("list"); }} maxBudget={maxBudget} />}
         {screen === "compare" && <CompareScreen homes={homes} compareList={compareList} toggleCompare={toggleCompare} clearCompare={() => setCompareList([])} onOpenHome={openHome} fin={fin} />}
-        {screen === "settings" && <SettingsScreen fin={fin} updateFin={updateFin} liveRate={liveRate} rateInfo={rateInfo} homes={homes} setHomes={setHomes} soldComps={soldComps} setSoldComps={setSoldComps} darkMode={darkMode} setDarkMode={setDarkMode} />}
+        {screen === "settings" && <SettingsScreen fin={fin} updateFin={updateFin} liveRate={liveRate} rateInfo={rateInfo} homes={homes} setHomes={setHomes} soldComps={soldComps} setSoldComps={setSoldComps} darkMode={darkMode} setDarkMode={setDarkMode} onTriggerEnrich={() => { enrichingRef.current = false; setEnrichDone(false); setEnrichTrigger(t => t + 1); }} enrichDone={enrichDone} />}
       </div>
 
       {/* Import Dialog */}
