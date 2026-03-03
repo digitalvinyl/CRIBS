@@ -358,7 +358,7 @@ async function fetchSchool(address, city, state, zip, lat, lng) {
         nicheGrade: null,
         testScores: null,
         studentTeacherRatio: str ? Math.round(str) : null,
-        notes: `NCES CCD 2022-23${frlPct != null ? " \u00b7 " + frlPct + "% free/reduced lunch" : ""}`,
+        notes: `NCES CCD 2022-23${frlPct != null ? " · " + frlPct + "% free/reduced lunch" : ""}`,
       };
     }
   } catch (e) { /* NCES query failed */ }
@@ -433,7 +433,7 @@ async function fetchNearbyParks(address, city, state, zip, lat, lng) {
       let acres = null;
       if (tags.way_area) acres = Math.round(parseFloat(tags.way_area) * 0.000247105 * 10) / 10;
 
-      parks.push({ name, distanceMi: Math.round(dist * 100) / 100, type, acres, amenities: [...new Set(amenities)].slice(0, 5) });
+      parks.push({ name, lat: elLat, lng: elLng, distanceMi: Math.round(dist * 100) / 100, type, acres, amenities: [...new Set(amenities)].slice(0, 5) });
     }
 
     // Also check if any park had playground tagged inside
@@ -488,7 +488,7 @@ function generateParks(lat, lng) {
   for (const p of HOUSTON_PARKS) {
     const dist = haversine(lat, lng, p.lat, p.lng);
     if (dist > 1.05) continue;
-    parks.push({ name: p.name, distanceMi: Math.round(dist * 100) / 100, type: p.type, acres: p.acres, amenities: p.amenities });
+    parks.push({ name: p.name, lat: p.lat, lng: p.lng, distanceMi: Math.round(dist * 100) / 100, type: p.type, acres: p.acres, amenities: p.amenities });
     if (p.type === "Trail" || p.amenities.includes("Trail")) hasTrailFlag = true;
     if (p.amenities.includes("Playground")) hasPlaygroundFlag = true;
   }
@@ -831,6 +831,85 @@ function GroceryMap({ home, groceries, className = "", visible = true }) {
 
     return () => { if (mapInstance.current) { mapInstance.current.remove(); mapInstance.current = null; } };
   }, [visible, home?.lat, home?.lng, groceries]);
+
+  return <div ref={mapRef} className={className} style={{ minHeight: 220, borderRadius: 12, zIndex: 0 }} />;
+}
+
+function ParkMap({ home, parks, className = "", visible = true }) {
+  const mapRef = useRef(null);
+  const mapInstance = useRef(null);
+
+  useEffect(() => {
+    if (!visible || !home?.lat || !home?.lng || !parks?.parks?.length) return;
+
+    if (!document.querySelector('link[href*="leaflet"]')) {
+      const link = document.createElement("link");
+      link.rel = "stylesheet";
+      link.href = "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css";
+      document.head.appendChild(link);
+    }
+
+    const init = (L) => {
+      if (!mapRef.current) return;
+      if (mapInstance.current) { mapInstance.current.remove(); mapInstance.current = null; }
+
+      const map = L.map(mapRef.current, { zoomControl: false, attributionControl: false, scrollWheelZoom: true });
+      L.control.zoom({ position: "topright" }).addTo(map);
+      const tileLayer = L.tileLayer("https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png", { maxZoom: 18, subdomains: "abcd" });
+      tileLayer.on("tileerror", () => {
+        if (!map._osfallback) {
+          map._osfallback = true;
+          tileLayer.remove();
+          L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 19 }).addTo(map);
+        }
+      });
+      tileLayer.addTo(map);
+
+      const homeIcon = L.divIcon({
+        html: `<div style="width:38px;height:38px;display:flex;align-items:center;justify-content:center;background:linear-gradient(135deg,#8b5cf6,#d946ef);border:3px solid white;border-radius:50%;font-size:18px;box-shadow:0 3px 10px rgba(139,92,246,0.4);">🏠</div>`,
+        className: "", iconSize: [38, 38], iconAnchor: [19, 19], popupAnchor: [0, -22],
+      });
+
+      const bounds = L.latLngBounds([[home.lat, home.lng]]);
+      L.marker([home.lat, home.lng], { icon: homeIcon }).addTo(map).bindPopup(`<strong>${home.address}</strong>`);
+
+      const colors = [
+        { bg: "#ecfdf5", border: "#059669" },
+        { bg: "#f0fdfa", border: "#0d9488" },
+        { bg: "#eff6ff", border: "#2563eb" },
+        { bg: "#fffbeb", border: "#d97706" },
+      ];
+
+      parks.parks.slice(0, 4).forEach((park, i) => {
+        if (!park.lat || !park.lng) return;
+        const getEmoji = (p) => p.type === "Trail" || p.type === "Linear Park" ? "🥾" : p.type === "Nature Preserve" ? "🌿" : p.amenities?.includes("Playground") ? "🛝" : "🌳";
+        const c = colors[i] || colors[0];
+        const icon = L.divIcon({
+          html: `<div style="width:32px;height:32px;display:flex;align-items:center;justify-content:center;background:${c.bg};border:2px solid ${c.border};border-radius:50%;font-size:16px;box-shadow:0 2px 6px rgba(0,0,0,0.2);">${getEmoji(park)}</div>`,
+          className: "", iconSize: [32, 32], iconAnchor: [16, 16], popupAnchor: [0, -18],
+        });
+        L.marker([park.lat, park.lng], { icon }).addTo(map)
+          .bindPopup(`<strong>${park.name}</strong><br/>${park.distanceMi} mi${park.type ? "<br/><span style='color:#888;font-size:11px'>" + park.type + (park.acres ? " · " + park.acres + " ac" : "") + "</span>" : ""}`);
+        bounds.extend([park.lat, park.lng]);
+      });
+
+      mapInstance.current = map;
+      requestAnimationFrame(() => {
+        if (map && mapRef.current) {
+          map.invalidateSize();
+          map.fitBounds(bounds.pad(0.15));
+        }
+      });
+    };
+
+    if (window.L) { init(window.L); return; }
+    const script = document.createElement("script");
+    script.src = "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js";
+    script.onload = () => init(window.L);
+    document.head.appendChild(script);
+
+    return () => { if (mapInstance.current) { mapInstance.current.remove(); mapInstance.current = null; } };
+  }, [visible, home?.lat, home?.lng, parks]);
 
   return <div ref={mapRef} className={className} style={{ minHeight: 220, borderRadius: 12, zIndex: 0 }} />;
 }
@@ -1601,7 +1680,7 @@ function HomeDetailScreen({ home, onBack, onUpdate, onDelete, compareList, toggl
 
   useEffect(() => { return () => stopVoice(); }, []);
 
-  useEffect(() => { stopVoice(); setNotes(home.notes || ""); setEditingNotes(false); setShowFinancial(false); setVoiceError(null); setSchool(home.school || null); setFlood(home.flood || null); setCrime(home.crime || null); setAppraisal(home.appraisal || null); setGroceryMapOpen(false); window.scrollTo(0, 0); }, [home.id]);
+  useEffect(() => { stopVoice(); setNotes(home.notes || ""); setEditingNotes(false); setShowFinancial(false); setVoiceError(null); setSchool(home.school || null); setFlood(home.flood || null); setCrime(home.crime || null); setAppraisal(home.appraisal || null); setGroceryMapOpen(false); setParkMapOpen(false); window.scrollTo(0, 0); }, [home.id]);
 
   // Appraisal value — fetch once per home, cache on the home object
   const [appraisal, setAppraisal] = useState(home.appraisal || null);
@@ -1648,6 +1727,7 @@ function HomeDetailScreen({ home, onBack, onUpdate, onDelete, compareList, toggl
   const [groceries, setGroceries] = useState(home.groceries || null);
   const [groceriesLoading, setGroceriesLoading] = useState(false);
   const [groceryMapOpen, setGroceryMapOpen] = useState(false);
+  const [parkMapOpen, setParkMapOpen] = useState(false);
 
   // Sync from props when batch fetch updates the home object
   useEffect(() => { if (home.flood && !flood) setFlood(home.flood); }, [home.flood]);
@@ -2200,56 +2280,50 @@ function HomeDetailScreen({ home, onBack, onUpdate, onDelete, compareList, toggl
                 <svg className={`w-5 h-5 ${parks?.greenSpaceScore === "excellent" ? "text-emerald-500" : parks?.greenSpaceScore === "good" ? "text-teal-500" : parks?.greenSpaceScore === "fair" ? "text-amber-500" : "text-stone-400"}`} viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C8.5 2 6 5 6 8c0 2 1.5 3.5 3 4.5V22h6V12.5c1.5-1 3-2.5 3-4.5 0-3-2.5-6-6-6zm-2 14H8v-1h2v1zm0-2.5H8v-1h2v1zm4 2.5h-2v-1h2v1zm0-2.5h-2v-1h2v1z"/></svg>
                 <h3 className="text-sm font-semibold text-stone-700">Parks & Green Space</h3>
               </div>
-              {parks && (
+              <div className="flex items-center gap-2">
+                {parks && (
+                  <button onClick={() => setParkMapOpen(v => !v)}
+                    className="md:hidden text-xs font-medium text-emerald-500 hover:text-emerald-600 flex items-center gap-1 transition-colors">
+                    <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" /><path strokeLinecap="round" strokeLinejoin="round" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
+                    {parkMapOpen ? "Hide Map" : "Map"}
+                  </button>
+                )}
+                {parks && (
                 <span className={`text-xs font-semibold px-2.5 py-1 rounded-full ${parks.greenSpaceScore === "excellent" ? "bg-emerald-100 text-emerald-600" : parks.greenSpaceScore === "good" ? "bg-teal-100 text-teal-600" : parks.greenSpaceScore === "fair" ? "bg-amber-100 text-amber-600" : "bg-stone-100 text-stone-500"}`}>
                   {parks.greenSpaceScore === "excellent" ? "Excellent" : parks.greenSpaceScore === "good" ? "Good" : parks.greenSpaceScore === "fair" ? "Fair" : "Limited"}
                 </span>
               )}
+              </div>
             </div>
 
             {parksLoading && <div className="text-sm text-stone-400 animate-pulse py-4">Finding nearby parks...</div>}
 
             {parks && (() => {
               const parkList = parks.parks?.slice(0, 4) || [];
-              const emptySlots = Math.max(0, 4 - parkList.length);
               const getEmoji = (p) => p.type === "Trail" || p.type === "Linear Park" ? "🥾" : p.type === "Nature Preserve" ? "🌿" : p.amenities?.includes("Playground") ? "🛝" : "🌳";
               const getBg = (i) => ["bg-emerald-50", "bg-teal-50", "bg-sky-50", "bg-amber-50"][i] || "bg-teal-50";
               const getColor = (i) => ["text-emerald-600", "text-teal-600", "text-sky-600", "text-amber-600"][i] || "text-teal-600";
               return (
-                <div className="space-y-3">
-                  <div className="grid grid-cols-2 gap-2">
+                <div className="flex flex-col md:flex-row gap-3">
+                  <div className="md:w-2/5 flex flex-col gap-1.5">
                     {parkList.map((park, i) => (
-                      <div key={i} className={`rounded-xl p-3 border border-stone-100 ${getBg(i)}`}>
-                        <div className="flex items-center gap-2 mb-1">
-                          <span className="text-base">{getEmoji(park)}</span>
-                          <span className={`text-xs font-bold truncate ${getColor(i)}`}>{park.name}</span>
+                      <div key={i} className={`rounded-lg px-3 py-2 border flex items-center gap-2.5 ${getBg(i)} border-stone-100`}>
+                        <span className="text-base flex-shrink-0">{getEmoji(park)}</span>
+                        <span className={`text-xs font-bold truncate flex-shrink-0 ${getColor(i)}`}>{park.name}</span>
+                        <div className="ml-auto text-right flex-shrink-0">
+                          <span className={`text-sm font-bold tabular-nums ${getColor(i)}`}>{park.distanceMi != null ? park.distanceMi.toFixed(1) : "—"} <span className="text-[10px] text-stone-400 font-normal">mi</span></span>
                         </div>
-                        <div className={`text-lg font-bold tabular-nums ${getColor(i)}`}>{park.distanceMi != null ? park.distanceMi.toFixed(1) : (park.distance || "—").replace(" mi", "")}<span className="text-xs text-stone-400 font-normal"> mi</span></div>
-                        <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
-                          <span className="text-[10px] text-stone-500">{park.type}{park.acres ? ` · ${park.acres} ac` : ""}</span>
-                        </div>
-                        {park.amenities?.length > 0 && (
-                          <div className="flex flex-wrap gap-1 mt-1.5">
-                            {park.amenities.slice(0, 3).map((a, j) => (
-                              <span key={j} className="text-[10px] bg-white/60 text-stone-500 px-1.5 py-0.5 rounded-full">{a}</span>
-                            ))}
-                          </div>
-                        )}
                       </div>
                     ))}
-                    {Array.from({ length: emptySlots }, (_, i) => (
-                      <div key={`empty-${i}`} className="rounded-xl p-3 border border-stone-100 bg-stone-50/50">
-                        <div className="flex items-center gap-2 mb-1">
-                          <span className="text-base opacity-30">🌳</span>
-                          <span className="text-xs font-bold text-stone-400">—</span>
-                        </div>
-                        <div className="text-xs text-stone-400 mt-1">No park found</div>
-                      </div>
-                    ))}
+                    {parkList.length === 0 && (
+                      <div className="rounded-lg px-3 py-2 border bg-stone-50/50 border-stone-100 text-xs text-stone-400">No parks found nearby</div>
+                    )}
+                    <div className="text-[10px] text-stone-500 px-1 mt-0.5">
+                      {parks.parkCount1Mi || 0} green space{(parks.parkCount1Mi || 0) !== 1 ? "s" : ""} within 1 mi{parks.hasTrail ? " · Trail access" : ""}{parks.hasPlayground ? " · Playground" : ""}
+                    </div>
                   </div>
-                  {/* Summary line */}
-                  <div className="flex items-center justify-between text-xs text-stone-500">
-                    <span>{parks.parkCount1Mi || 0} green space{(parks.parkCount1Mi || 0) !== 1 ? "s" : ""} within 1 mi{parks.hasTrail ? " · Trail access" : ""}{parks.hasPlayground ? " · Playground" : ""}</span>
+                  <div className={`md:w-3/5 ${parkMapOpen ? "block" : "hidden md:block"}`}>
+                    <ParkMap home={home} parks={parks} visible={parkMapOpen || window.innerWidth >= 768} className="w-full h-full min-h-[220px] md:min-h-[260px] rounded-xl border border-stone-200" />
                   </div>
                 </div>
               );
@@ -3283,7 +3357,7 @@ function CompareScreen({ homes, compareList, toggleCompare, clearCompare, onOpen
                   <span className={`inline-flex items-center gap-1 text-xs font-semibold px-2 py-0.5 rounded-full ${a.parks.greenSpaceScore === "excellent" ? "bg-emerald-100 text-emerald-600" : a.parks.greenSpaceScore === "good" ? "bg-teal-100 text-teal-600" : "bg-amber-100 text-amber-600"}`}>
                     {String.fromCodePoint(0x1F333)} {a.parks.parkCount1Mi || 0} parks {a.parks.nearestDistanceMi != null ? "\u00B7 " + a.parks.nearestDistanceMi.toFixed(1) + "mi" : ""}
                   </span>
-                ) : <span className="text-stone-300">\u2014</span>}
+                ) : <span className="text-stone-300">—</span>}
               </span>
               <span className="w-28 md:w-36 text-center flex items-center justify-center gap-1">
                 <svg className="w-4 h-4 text-teal-500" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C8.5 2 6 5 6 8c0 2 1.5 3.5 3 4.5V22h6V12.5c1.5-1 3-2.5 3-4.5 0-3-2.5-6-6-6z"/></svg>
@@ -3294,7 +3368,7 @@ function CompareScreen({ homes, compareList, toggleCompare, clearCompare, onOpen
                   <span className={`inline-flex items-center gap-1 text-xs font-semibold px-2 py-0.5 rounded-full ${b.parks.greenSpaceScore === "excellent" ? "bg-emerald-100 text-emerald-600" : b.parks.greenSpaceScore === "good" ? "bg-teal-100 text-teal-600" : "bg-amber-100 text-amber-600"}`}>
                     {String.fromCodePoint(0x1F333)} {b.parks.parkCount1Mi || 0} parks {b.parks.nearestDistanceMi != null ? "\u00B7 " + b.parks.nearestDistanceMi.toFixed(1) + "mi" : ""}
                   </span>
-                ) : <span className="text-stone-300">\u2014</span>}
+                ) : <span className="text-stone-300">—</span>}
               </span>
             </div>
           )}
@@ -3755,7 +3829,7 @@ export default function CribsApp() {
           // are from a pre-enrichment version, reset to baked-in defaults.
           const hasEnrichment = p.some(h => h.flood && h.crime);
           if (hasEnrichment) {
-            // v1.5.5 migration: clear old school/appraisal data from Anthropic API so it re-fetches from NCES/HCAD
+            // v1.5.6 migration: clear old school/appraisal data from Anthropic API so it re-fetches from NCES/HCAD
             const needsMigration = p.some(h => h.school?.ratingSource === "GreatSchools" || h.school?.nicheGrade || (h.appraisal && !h.appraisal.value) || (h.appraisal && h.appraisal.source !== "HCAD (Harris County Appraisal District)"));
             if (needsMigration) {
               const migrated = p.map(h => ({ ...h, school: null, appraisal: null }));
@@ -4132,7 +4206,7 @@ export default function CribsApp() {
               <svg className="w-5 h-5" viewBox="0 0 24 24" fill="white"><path d="M12 3L2 12h3v8h5v-5h4v5h5v-8h3L12 3z"/></svg>
             </div>
             <h1 className="text-lg font-bold tracking-tight text-stone-800">CRIBS</h1>
-            <span className="text-[10px] text-stone-400 font-medium ml-1 self-end mb-0.5">v1.5.5</span>
+            <span className="text-[10px] text-stone-400 font-medium ml-1 self-end mb-0.5">v1.5.6</span>
           </button>
           <nav className="flex gap-1 bg-stone-100 rounded-lg p-0.5 border border-stone-200">
             <button onClick={goList} className={`px-4 py-2 text-sm font-medium rounded-md transition-colors ${screen === "list" || screen === "detail" ? "bg-white text-sky-600 shadow-sm" : "text-stone-500 hover:text-stone-700"}`}>Homes</button>
