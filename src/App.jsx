@@ -188,27 +188,23 @@ async function fetchLiveRate() {
 }
 
 
-async function fetchAppraisal(address, city, state) {
-  try {
-    const res = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: "claude-sonnet-4-20250514",
-        max_tokens: 1000,
-        system: "You are a property data extraction tool. Search for the latest county tax appraisal value for the given property. For Texas properties, check the county appraisal district (e.g. HCAD for Harris County). Return ONLY a JSON object with no other text, no markdown, no backticks. Shape: {\"appraisalValue\": <number>, \"appraisalYear\": <number like 2025>, \"source\": \"<district name>\"}. If you cannot find the value, return {\"appraisalValue\": null, \"appraisalYear\": null, \"source\": null}.",
-        messages: [{ role: "user", content: `Find the latest property tax appraisal value for: ${address}, ${city}, ${state}. Search the county appraisal district website. Return only the JSON.` }],
-        tools: [{ type: "web_search_20250305", name: "web_search" }],
-      }),
-    });
-    const data = await res.json();
-    const text = data.content?.map((b) => b.type === "text" ? b.text : "").join("") || "";
-    const clean = text.replace(/```json|```/g, "").trim();
-    const parsed = JSON.parse(clean);
-    if (parsed.appraisalValue && typeof parsed.appraisalValue === "number" && parsed.appraisalValue > 0) {
-      return parsed;
-    }
-  } catch (e) { /* fall through */ }
+async function fetchAppraisal(address, city, state, lat, lng) {
+  // Primary: HCAD ArcGIS REST API (Harris County parcels with appraisal values)
+  if (lat && lng) {
+    try {
+      const url = `https://www.gis.hctx.net/arcgis/rest/services/HCAD/Parcels/MapServer/0/query?geometry=${lng},${lat}&geometryType=esriGeometryPoint&inSR=4326&spatialRel=esriSpatialRelIntersects&outFields=total_appraised_val,total_market_val,tax_year,acct_num&returnGeometry=false&f=json`;
+      const res = await fetch(url, { signal: AbortSignal.timeout(10000) });
+      const data = await res.json();
+      if (data.features?.length > 0) {
+        const f = data.features[0].attributes;
+        const val = f.total_appraised_val || f.total_market_val;
+        const year = f.tax_year ? parseInt(f.tax_year) : new Date().getFullYear();
+        if (val && val > 0) {
+          return { appraisalValue: val, appraisalYear: year, source: "HCAD (Harris County Appraisal District)", marketValue: f.total_market_val || null, acctNum: f.acct_num || null };
+        }
+      }
+    } catch (e) { /* HCAD query failed, fall through */ }
+  }
   return null;
 }
 
@@ -296,28 +292,58 @@ async function fetchCrime(address, city, state, zip, lat, lng) {
   return null;
 }
 
-async function fetchSchool(address, city, state, zip) {
+async function fetchSchool(address, city, state, zip, lat, lng) {
+  // NCES EDGE 2022-23 ArcGIS REST API — find nearest elementary schools
+  if (!lat || !lng) return null;
   try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 10000);
-    const res = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      signal: controller.signal,
-      body: JSON.stringify({
-        model: "claude-sonnet-4-20250514",
-        max_tokens: 1000,
-        system: `You are a school zoning data extraction tool. Search for the zoned elementary school for the given property address. Look for data from the local school district (e.g. HISD for Houston), GreatSchools.org, Niche.com, or similar sources. Find the specific elementary school the address is zoned to and its rating. Return ONLY a JSON object with no other text, no markdown, no backticks. Shape: {"schoolName": "<full school name>", "district": "<school district name>", "rating": <GreatSchools rating 1-10 or null>, "ratingSource": "<GreatSchools|Niche|etc>", "tier": "<great|good|below>", "grades": "<grade range like PK-5 or K-5>", "enrollment": <number or null>, "distance": "<approximate distance like 0.4 mi or null>", "nicheGrade": "<A+|A|A-|B+|B|B-|C+|C|C-|D|F or null>", "testScores": <percentage of students at or above proficiency in math+reading, integer 0-100 or null>, "studentTeacherRatio": <student-to-teacher ratio as integer like 14 or 16, or null>, "notes": "<any relevant detail like magnet programs, dual language, recent improvements, or boundary changes>"}. Tier mapping: rating 8-10 = great, 5-7 = good, 1-4 = below. If you cannot find the info, return {"schoolName": null, "district": null, "rating": null, "ratingSource": null, "tier": null, "grades": null, "enrollment": null, "distance": null, "nicheGrade": null, "testScores": null, "studentTeacherRatio": null, "notes": null}.`,
-        messages: [{ role: "user", content: `Find the zoned elementary school for the property at: ${address}, ${city}, ${state} ${zip || ""}. Search for which elementary school this address is zoned to and its GreatSchools or Niche rating. Return only the JSON.` }],
-        tools: [{ type: "web_search_20250305", name: "web_search" }],
-      }),
-    });
+    const fields = "SCH_NAME,LEA_NAME,GSLO,GSHI,SCHOOL_LEVEL,MEMBER,STUTERATIO,FTE,TOTFRL,LATCOD,LONCOD,CHARTER_TEXT,VIRTUAL,LSTREET1,LCITY,LZIP,STATUS";
+    const where = encodeURIComponent("SCHOOL_LEVEL='Elementary' AND STATUS='1'");
+    const url = `https://nces.ed.gov/opengis/rest/services/K12_School_Locations/EDGE_ADMINDATA_PUBLICSCH_2223/MapServer/0/query?geometry=${lng},${lat}&geometryType=esriGeometryPoint&inSR=4269&spatialRel=esriSpatialRelIntersects&distance=8046&units=esriSRUnit_Meter&where=${where}&outFields=${fields}&returnGeometry=false&resultRecordCount=5&f=json`;
+    const res = await fetch(url, { signal: AbortSignal.timeout(12000) });
     const data = await res.json();
-    const text = data.content?.map((b) => b.type === "text" ? b.text : "").join("") || "";
-    const clean = text.replace(/```json|```/g, "").trim();
-    const parsed = JSON.parse(clean);
-    if (parsed.schoolName) return parsed;
-  } catch (e) { /* fall through */ }
+    if (data.features?.length > 0) {
+      // Calculate distances and pick nearest
+      const toRad = (d) => d * Math.PI / 180;
+      const haversine = (lat1, lng1, lat2, lng2) => {
+        const R = 3958.8; // miles
+        const dLat = toRad(lat2 - lat1), dLng = toRad(lng2 - lng1);
+        const a = Math.sin(dLat/2)**2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng/2)**2;
+        return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+      };
+      const schools = data.features
+        .map(f => ({ ...f.attributes, dist: haversine(lat, lng, f.attributes.LATCOD, f.attributes.LONCOD) }))
+        .filter(s => s.VIRTUAL !== 'Virtual' && s.CHARTER_TEXT !== 'Yes')
+        .sort((a, b) => a.dist - b.dist);
+      if (schools.length === 0) return null;
+      const s = schools[0];
+      const enrollment = s.MEMBER || null;
+      const str = s.STUTERATIO || (s.FTE && enrollment ? Math.round(enrollment / s.FTE) : null);
+      const frlPct = (enrollment && s.TOTFRL) ? Math.round(s.TOTFRL / enrollment * 100) : null;
+      // Derive tier from student-teacher ratio
+      let tier = "good";
+      if (str && str <= 14) tier = "great";
+      else if (str && str > 20) tier = "below";
+      // Grade range
+      const gradeMap = { 'PK': 'PK', 'KG': 'K', '01': '1', '02': '2', '03': '3', '04': '4', '05': '5', '06': '6', '07': '7', '08': '8' };
+      const lo = gradeMap[s.GSLO] || s.GSLO || '';
+      const hi = gradeMap[s.GSHI] || s.GSHI || '';
+      const grades = lo && hi ? `${lo}-${hi}` : null;
+      return {
+        schoolName: s.SCH_NAME || null,
+        district: s.LEA_NAME || null,
+        rating: null,
+        ratingSource: null,
+        tier,
+        grades,
+        enrollment,
+        distance: s.dist ? s.dist.toFixed(1) + " mi" : null,
+        nicheGrade: null,
+        testScores: null,
+        studentTeacherRatio: str ? Math.round(str) : null,
+        notes: `NCES CCD 2022-23${frlPct != null ? " \u00b7 " + frlPct + "% free/reduced lunch" : ""}`,
+      };
+    }
+  } catch (e) { /* NCES query failed */ }
   return null;
 }
 
@@ -1548,7 +1574,7 @@ function HomeDetailScreen({ home, onBack, onUpdate, onDelete, compareList, toggl
     let cancelled = false;
     setAppraisalLoading(true);
     setAppraisal(null);
-    fetchAppraisal(home.address, home.city, home.state).then((result) => {
+    fetchAppraisal(home.address, home.city, home.state, home.lat, home.lng).then((result) => {
       if (cancelled) return;
       setAppraisalLoading(false);
       if (result && result.appraisalValue) {
@@ -1621,7 +1647,7 @@ function HomeDetailScreen({ home, onBack, onUpdate, onDelete, compareList, toggl
     if (school || home.school) { if (home.school) setSchool(home.school); return; }
     let cancelled = false;
     setSchoolLoading(true);
-    fetchSchool(home.address, home.city, home.state, home.zip).then((result) => {
+    fetchSchool(home.address, home.city, home.state, home.zip, home.lat, home.lng).then((result) => {
       if (cancelled) return;
       setSchoolLoading(false);
       if (result?.schoolName) { setSchool(result); onUpdate(home.id, { school: result }); }
@@ -2103,7 +2129,7 @@ function HomeDetailScreen({ home, onBack, onUpdate, onDelete, compareList, toggl
                   <button onClick={() => {
                     setSchoolLoading(true);
                     setSchool(null);
-                    fetchSchool(home.address, home.city, home.state, home.zip).then((r) => {
+                    fetchSchool(home.address, home.city, home.state, home.zip, home.lat, home.lng).then((r) => {
                       setSchoolLoading(false);
                       if (r && r.schoolName) { setSchool(r); onUpdate(home.id, { school: r }); }
                     });
@@ -2117,7 +2143,7 @@ function HomeDetailScreen({ home, onBack, onUpdate, onDelete, compareList, toggl
                 <span className="text-sm text-stone-400">No school data available</span>
                 <button onClick={() => {
                   setSchoolLoading(true);
-                  fetchSchool(home.address, home.city, home.state, home.zip).then((r) => {
+                  fetchSchool(home.address, home.city, home.state, home.zip, home.lat, home.lng).then((r) => {
                     setSchoolLoading(false);
                     if (r && r.schoolName) { setSchool(r); onUpdate(home.id, { school: r }); }
                   });
@@ -2705,7 +2731,7 @@ function HomeDetailScreen({ home, onBack, onUpdate, onDelete, compareList, toggl
               // School
               if (home.school?.rating != null) {
                 const pts = (home.school.rating / 10) * 15;
-                components.push({ label: "School Rating", pts, max: 15, detail: `${home.school.rating}/10 — ${home.school.name || "nearby school"}`, icon: "🏫" });
+                components.push({ label: "School Rating", pts, max: 15, detail: `${home.school.rating}/10 — ${home.school.schoolName || "nearby school"}`, icon: "🏫" });
               } else {
                 components.push({ label: "School Rating", pts: 0, max: 15, detail: "No school data", icon: "🏫", missing: true });
               }
@@ -2871,7 +2897,7 @@ function HomeDetailScreen({ home, onBack, onUpdate, onDelete, compareList, toggl
                       <button onClick={() => {
                         setAppraisalLoading(true);
                         setAppraisal(null);
-                        fetchAppraisal(home.address, home.city, home.state).then((r) => {
+                        fetchAppraisal(home.address, home.city, home.state, home.lat, home.lng).then((r) => {
                           setAppraisalLoading(false);
                           if (r && r.appraisalValue) {
                             const d = { value: r.appraisalValue, year: r.appraisalYear, source: r.source };
@@ -2890,7 +2916,7 @@ function HomeDetailScreen({ home, onBack, onUpdate, onDelete, compareList, toggl
                 <span className="text-xs text-stone-400">No appraisal data</span>
                 <button onClick={() => {
                   setAppraisalLoading(true);
-                  fetchAppraisal(home.address, home.city, home.state).then((r) => {
+                  fetchAppraisal(home.address, home.city, home.state, home.lat, home.lng).then((r) => {
                     setAppraisalLoading(false);
                     if (r && r.appraisalValue) {
                       const d = { value: r.appraisalValue, year: r.appraisalYear, source: r.source };
@@ -3947,7 +3973,7 @@ export default function CribsApp() {
               <svg className="w-5 h-5" viewBox="0 0 24 24" fill="white"><path d="M12 3L2 12h3v8h5v-5h4v5h5v-8h3L12 3z"/></svg>
             </div>
             <h1 className="text-lg font-bold tracking-tight text-stone-800">CRIBS</h1>
-            <span className="text-[10px] text-stone-400 font-medium ml-1 self-end mb-0.5">v1.4.1</span>
+            <span className="text-[10px] text-stone-400 font-medium ml-1 self-end mb-0.5">v1.4.2</span>
           </button>
           <nav className="flex gap-1 bg-stone-100 rounded-lg p-0.5 border border-stone-200">
             <button onClick={goList} className={`px-4 py-2 text-sm font-medium rounded-md transition-colors ${screen === "list" || screen === "detail" ? "bg-white text-sky-600 shadow-sm" : "text-stone-500 hover:text-stone-700"}`}>Homes</button>
