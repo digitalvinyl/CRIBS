@@ -211,53 +211,87 @@ async function fetchAppraisal(address, city, state) {
   return null;
 }
 
-async function fetchFloodZone(address, city, state, zip) {
+async function fetchFloodZone(address, city, state, zip, lat, lng) {
+  let fLat = lat, fLng = lng;
+  if (!fLat || !fLng) {
+    try {
+      const q = encodeURIComponent(`${address}, ${city}, ${state} ${zip || ""}`);
+      const geoRes = await fetch(`https://nominatim.openstreetmap.org/search?q=${q}&format=json&limit=1`, { headers: { "User-Agent": "CRIBSApp/1.0" }, signal: AbortSignal.timeout(6000) });
+      const geoData = await geoRes.json();
+      if (geoData?.[0]) { fLat = parseFloat(geoData[0].lat); fLng = parseFloat(geoData[0].lon); }
+    } catch (e) { /* geocode failed */ }
+  }
+  if (!fLat || !fLng) return null;
   try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 10000);
-    const res = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      signal: controller.signal,
-      body: JSON.stringify({
-        model: "claude-sonnet-4-20250514",
-        max_tokens: 1000,
-        system: `You are a flood risk data extraction tool. Search for FEMA flood zone designation for the given property address. Look up the address on FEMA's Flood Map Service Center or any reliable flood zone lookup tool. Return ONLY a JSON object with no other text, no markdown, no backticks. Shape: {"zone": "<FEMA zone code like X, AE, A, AO, VE, etc>", "zoneDesc": "<short description like 'Minimal Flood Hazard' or '100-Year Floodplain'>", "risk": "<low|moderate|high>", "panel": "<FEMA map panel number if found, or null>", "notes": "<any relevant detail like BFE or special considerations>"}. Risk mapping: Zone X/C = low, Zone X shaded/B/0.2% = moderate, Zones A/AE/AO/AH/V/VE = high. If you cannot find the info, return {"zone": null, "zoneDesc": null, "risk": null, "panel": null, "notes": null}.`,
-        messages: [{ role: "user", content: `Find the FEMA flood zone designation for: ${address}, ${city}, ${state} ${zip || ""}. Search FEMA flood maps or any flood zone lookup service. Return only the JSON.` }],
-        tools: [{ type: "web_search_20250305", name: "web_search" }],
-      }),
-    });
+    const url = `https://hazards.fema.gov/gis/nfhl/rest/services/public/NFHL/MapServer/28/query?geometry=${fLng},${fLat}&geometryType=esriGeometryPoint&inSR=4326&spatialRel=esriSpatialRelIntersects&outFields=FLD_ZONE,ZONE_SUBTY,SFHA_TF&returnGeometry=false&f=json`;
+    const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
     const data = await res.json();
-    const text = data.content?.map((b) => b.type === "text" ? b.text : "").join("") || "";
-    const clean = text.replace(/```json|```/g, "").trim();
-    const parsed = JSON.parse(clean);
-    if (parsed.zone) return parsed;
-  } catch (e) { /* fall through */ }
+    if (data.features?.length > 0) {
+      const f = data.features[0].attributes;
+      const zone = f.FLD_ZONE || "X";
+      const isSFHA = f.SFHA_TF === "T";
+      const subType = f.ZONE_SUBTY || "";
+      let risk = "low", zoneDesc = "Minimal Flood Hazard";
+      if (["A", "AE", "AH", "AO", "AR", "A99", "V", "VE"].includes(zone)) {
+        risk = "high"; zoneDesc = zone.startsWith("V") ? "Coastal High Hazard (100-yr)" : "100-Year Floodplain";
+      } else if (zone === "X" && subType.includes("0.2")) {
+        risk = "moderate"; zoneDesc = "500-Year Floodplain (0.2% annual)";
+      } else if (zone === "D") {
+        risk = "moderate"; zoneDesc = "Undetermined Risk";
+      }
+      return { zone, zoneDesc, risk, panel: null, notes: isSFHA ? "In Special Flood Hazard Area — flood insurance likely required" : subType || null };
+    }
+    return { zone: "X", zoneDesc: "Minimal Flood Hazard (outside SFHA)", risk: "low", panel: null, notes: "Not in a FEMA-mapped flood zone" };
+  } catch (e) { /* FEMA query failed */ }
   return null;
 }
 
-async function fetchCrime(address, city, state, zip) {
+async function fetchCrime(address, city, state, zip, lat, lng) {
+  let cLat = lat, cLng = lng;
+  if (!cLat || !cLng) {
+    try {
+      const q = encodeURIComponent(`${address}, ${city}, ${state} ${zip || ""}`);
+      const geoRes = await fetch(`https://nominatim.openstreetmap.org/search?q=${q}&format=json&limit=1`, { headers: { "User-Agent": "CRIBSApp/1.0" }, signal: AbortSignal.timeout(6000) });
+      const geoData = await geoRes.json();
+      if (geoData?.[0]) { cLat = parseFloat(geoData[0].lat); cLng = parseFloat(geoData[0].lon); }
+    } catch (e) { /* geocode failed */ }
+  }
+  if (!cLat || !cLng) return null;
   try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 10000);
-    const res = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      signal: controller.signal,
-      body: JSON.stringify({
-        model: "claude-sonnet-4-20250514",
-        max_tokens: 1000,
-        system: `You are a neighborhood crime data extraction tool. Search for crime statistics and safety ratings for the given property's neighborhood or ZIP code. Look for data from sources like NeighborhoodScout, CrimeGrade, SpotCrime, local police department crime maps, or city open data portals. Return ONLY a JSON object with no other text, no markdown, no backticks. Shape: {"risk": "<low|moderate|high>", "grade": "<A+|A|A-|B+|B|B-|C+|C|C-|D+|D|D-|F or null>", "violentPerK": <violent crimes per 1000 residents per year or null>, "propertyPerK": <property crimes per 1000 residents per year or null>, "nationalAvgViolent": 4.0, "nationalAvgProperty": 19.6, "topConcerns": ["<top 2-3 crime types in area>"], "source": "<data source name>", "notes": "<any relevant context like trends, nearby areas, or specific safety considerations>"}. Risk mapping: grade A/B = low, C = moderate, D/F = high. If you cannot find data, return {"risk": null, "grade": null, "violentPerK": null, "propertyPerK": null, "nationalAvgViolent": 4.0, "nationalAvgProperty": 19.6, "topConcerns": [], "source": null, "notes": null}.`,
-        messages: [{ role: "user", content: `Find neighborhood crime statistics and safety rating for the area around: ${address}, ${city}, ${state} ${zip || ""}. Search crime data sources. Return only the JSON.` }],
-        tools: [{ type: "web_search_20250305", name: "web_search" }],
-      }),
-    });
-    const data = await res.json();
-    const text = data.content?.map((b) => b.type === "text" ? b.text : "").join("") || "";
-    const clean = text.replace(/```json|```/g, "").trim();
-    const parsed = JSON.parse(clean);
-    if (parsed.risk) return parsed;
-  } catch (e) { /* fall through */ }
+    // Houston PD open data via Socrata — count incidents within ~1 mile in last 12 months
+    const radiusM = 1609;
+    const oneYearAgo = new Date(Date.now() - 365 * 86400000).toISOString().slice(0, 10);
+    const url = `https://data.houstontx.gov/resource/59im-jpte.json?$where=within_circle(geolocation,${cLat},${cLng},${radiusM}) AND date > '${oneYearAgo}'&$select=count(*) as total,offense_type&$group=offense_type&$order=total DESC&$limit=20`;
+    const res = await fetch(url, { signal: AbortSignal.timeout(8000), headers: { "Accept": "application/json" } });
+    if (res.ok) {
+      const rows = await res.json();
+      if (Array.isArray(rows) && rows.length > 0) {
+        const total = rows.reduce((s, r) => s + parseInt(r.total || 0, 10), 0);
+        const violent = rows.filter(r => /assault|robbery|murder|homicide|rape|kidnap/i.test(r.offense_type || "")).reduce((s, r) => s + parseInt(r.total || 0, 10), 0);
+        const property = rows.filter(r => /theft|burglary|auto.theft|arson|shoplifting/i.test(r.offense_type || "")).reduce((s, r) => s + parseInt(r.total || 0, 10), 0);
+        const topConcerns = rows.slice(0, 3).map(r => r.offense_type).filter(Boolean);
+        const estPop = 8;
+        const violentPerK = Math.round(violent / estPop * 10) / 10;
+        const propertyPerK = Math.round(property / estPop * 10) / 10;
+        let risk = "low", grade = "B+";
+        if (violentPerK >= 6 || total > 1200) { risk = "high"; grade = violent > 80 ? "F" : "D"; }
+        else if (violentPerK >= 3 || total > 600) { risk = "moderate"; grade = violentPerK >= 4.5 ? "C-" : "C+"; }
+        else if (total < 200) { grade = "A"; }
+        else if (total < 400) { grade = "A-"; }
+        else { grade = "B"; }
+        return { risk, grade, violentPerK, propertyPerK, nationalAvgViolent: 4.0, nationalAvgProperty: 19.6, topConcerns, source: "Houston PD Open Data", notes: `${total} incidents within 1 mi in past year` };
+      }
+    }
+  } catch (e) { /* HPD query failed */ }
+  // ZIP-based fallback
+  try {
+    const zipNum = parseInt(zip, 10);
+    const low = [77024, 77079, 77055, 77056, 77027, 77005, 77025, 77030, 77401, 77459, 77494, 77450, 77479, 77043, 77077, 77063];
+    const high = [77026, 77028, 77029, 77051, 77033, 77047, 77061, 77087, 77093, 77016, 77020, 77039, 77078];
+    if (low.includes(zipNum)) return { risk: "low", grade: "A-", violentPerK: 2.1, propertyPerK: 12.0, nationalAvgViolent: 4.0, nationalAvgProperty: 19.6, topConcerns: ["Theft", "Burglary"], source: "ZIP Estimate", notes: "Low-crime area" };
+    if (high.includes(zipNum)) return { risk: "high", grade: "D", violentPerK: 8.5, propertyPerK: 32.0, nationalAvgViolent: 4.0, nationalAvgProperty: 19.6, topConcerns: ["Assault", "Theft", "Burglary"], source: "ZIP Estimate", notes: "Higher-crime area" };
+    return { risk: "moderate", grade: "C+", violentPerK: 4.2, propertyPerK: 20.0, nationalAvgViolent: 4.0, nationalAvgProperty: 19.6, topConcerns: ["Theft", "Auto Theft"], source: "ZIP Estimate", notes: "Average crime for Houston metro" };
+  } catch (e) { /* fallback failed */ }
   return null;
 }
 
@@ -514,11 +548,26 @@ function haversine(lat1, lon1, lat2, lon2) {
 function estimateCommute(lat1, lng1, lat2, lng2) {
   if (!lat1 || !lng1 || !lat2 || !lng2) return null;
   const crowMiles = haversine(lat1, lng1, lat2, lng2);
-  const roadMiles = crowMiles * 1.35; // road winding factor
-  // Houston avg speeds: <5 mi ~22mph (city), 5-15 mi ~28mph (mixed), >15 mi ~35mph (highway)
+  const roadMiles = crowMiles * 1.35;
   const avgSpeed = roadMiles < 5 ? 22 : roadMiles < 15 ? 28 : 35;
   const minutes = Math.round((roadMiles / avgSpeed) * 60);
-  return { miles: Math.round(roadMiles * 10) / 10, minutes };
+  return { miles: Math.round(roadMiles * 10) / 10, minutes, source: "estimate" };
+}
+
+async function fetchCommute(lat1, lng1, lat2, lng2) {
+  if (!lat1 || !lng1 || !lat2 || !lng2) return null;
+  try {
+    const url = `https://router.project-osrm.org/route/v1/driving/${lng1},${lat1};${lng2},${lat2}?overview=false`;
+    const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
+    const data = await res.json();
+    if (data.routes?.[0]) {
+      const r = data.routes[0];
+      const miles = Math.round(r.distance / 1609.34 * 10) / 10;
+      const minutes = Math.round((r.duration / 60) * 1.3);
+      return { miles, minutes, source: "osrm" };
+    }
+  } catch (e) { /* OSRM failed */ }
+  return estimateCommute(lat1, lng1, lat2, lng2);
 }
 
 /* Per-home insurance estimate for Houston/Harris County */
@@ -571,7 +620,7 @@ function calcMortgage(price, downAmount, rate, termYears, propTaxRate, insurance
 const Icon = ({ d, className = "w-5 h-5", stroke = true }) => (
   <svg className={className} viewBox="0 0 24 24" fill={stroke ? "none" : "currentColor"} stroke={stroke ? "currentColor" : "none"} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d={d} /></svg>
 );
-const HomeIcon = (p) => <Icon {...p} d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-4 0a1 1 0 01-1-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 01-1 1" />;
+const HomeIcon = (p) => <svg {...p} viewBox="0 0 24 24" fill="currentColor"><path d="M12 3L2 12h3v8h5v-5h4v5h5v-8h3L12 3z"/></svg>;
 const ChartIcon = (p) => <Icon {...p} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />;
 const CompareIcon = (p) => (
   <svg {...p} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -679,7 +728,7 @@ function StarRating({ value, onChange, size = "w-6 h-6" }) {
         <button key={s}
           onClick={() => onChange(value === s ? 0 : s)}
           onMouseEnter={() => setHoverValue(s)}
-          className={`${size} transition-colors star-tap ${s <= display ? "text-amber-400" : "text-stone-300"}`}>
+          className={`${size} transition-all star-tap ${s <= display ? "text-amber-400 hover:opacity-75 active:opacity-65" : "text-stone-400"}`}>
           <StarIcon filled={s <= display} className="w-full h-full" />
         </button>
       ))}
@@ -930,7 +979,8 @@ function HomeListScreen({ homes, setHomes, onOpenHome, compareList, toggleCompar
                       {sortKey === "value" && <p className={`text-[11px] font-bold tabular-nums ${valueScores[h.id] >= 70 ? "text-teal-600" : valueScores[h.id] >= 50 ? "text-amber-600" : "text-orange-500"}`}>{valueScores[h.id]} value</p>}
                     </div>
                     <button onClick={(e) => { e.stopPropagation(); setHomes((p) => p.map((x) => x.id === h.id ? { ...x, favorite: !x.favorite } : x)); }}
-                      className={`mt-0.5 star-tap ${h.favorite ? "text-amber-400" : "text-stone-300"}`}>
+                      title={h.favorite ? "Unfavorite" : "Favorite"}
+                      className={`mt-0.5 star-tap ${h.favorite ? "text-amber-400" : "text-stone-300 hover:text-amber-300"}`}>
                       <StarIcon filled={h.favorite} className="w-5 h-5" />
                     </button>
                   </div>
@@ -1000,7 +1050,6 @@ function HomeListScreen({ homes, setHomes, onOpenHome, compareList, toggleCompar
           <thead className="bg-stone-50/80 border-b border-stone-200">
             <tr>
               <th className="py-3 px-3 w-8"></th>
-              <th className="py-3 px-3 w-8"></th>
               <SortHeader field="address">Address</SortHeader>
               <SortHeader field="city">City</SortHeader>
               <SortHeader field="price">Price</SortHeader>
@@ -1019,8 +1068,9 @@ function HomeListScreen({ homes, setHomes, onOpenHome, compareList, toggleCompar
               <SortHeader field="nearestPark">Parks</SortHeader>
               <SortHeader field="value"><span title="Composite score (0-100) based on price vs appraisal, $/sqft vs area median, school rating, flood risk, crime, and days on market. Higher = better value.">Value</span></SortHeader>
               <th className="py-3 px-3 text-xs font-semibold tracking-wider uppercase text-stone-400">Avg ★</th>
-              <th className="py-3 px-3 w-8"></th>
-              <th className="py-3 px-3 w-8"></th>
+              <th className="py-3 px-3 w-8" title="Compare"></th>
+              <th className="py-3 px-3 w-8" title="Link"></th>
+              <th className="py-3 px-3 w-8" title="Delete"></th>
             </tr>
           </thead>
           <tbody className="divide-y divide-stone-100">
@@ -1030,14 +1080,11 @@ function HomeListScreen({ homes, setHomes, onOpenHome, compareList, toggleCompar
               const monthly = h.price ? quickMonthly(h.price, fin.cash, h.hoa || 0, fin.rate, fin.closing, hTax2, h) : 0;
               const monthlyTax = h.price ? Math.round((h.price * hTax2 / 100) / 12) : 0;
               return (
-                <tr key={h.id} onClick={() => onOpenHome(h, filtered)} className="hover:bg-sky-50/30 cursor-pointer transition-colors duration-200 hover:shadow-sm">
-                  <td className="py-2.5 px-3 text-center" onClick={(e) => e.stopPropagation()}>
-                    <button onClick={() => setHomes((p) => p.map((x) => x.id === h.id ? { ...x, viewed: !x.viewed } : x))}
-                      className={`w-5 h-5 rounded border flex items-center justify-center text-xs transition-colors check-pop ${h.viewed ? "bg-teal-500 border-teal-500 text-white" : "border-stone-300 text-transparent hover:border-stone-400"}`}>✓</button>
-                  </td>
+                <tr key={h.id} onClick={() => onOpenHome(h, filtered)} className="group hover:bg-sky-50/30 cursor-pointer transition-colors duration-200 hover:shadow-sm">
                   <td className="py-2.5 px-3 text-center" onClick={(e) => e.stopPropagation()}>
                     <button onClick={() => setHomes((p) => p.map((x) => x.id === h.id ? { ...x, favorite: !x.favorite } : x))}
-                      className={`star-tap ${h.favorite ? "text-amber-400" : "text-stone-300 hover:text-amber-200"}`}>
+                      title={h.favorite ? "Unfavorite" : "Favorite"}
+                      className={`star-tap ${h.favorite ? "text-amber-400" : "text-stone-300 hover:text-amber-300"}`}>
                       <StarIcon filled={h.favorite} className="w-4 h-4" />
                     </button>
                   </td>
@@ -1105,11 +1152,18 @@ function HomeListScreen({ homes, setHomes, onOpenHome, compareList, toggleCompar
                     ) : <span className="text-stone-300 text-xs">—</span>}
                   </td>
                   <td className="py-2.5 px-3" onClick={(e) => e.stopPropagation()}>
-                    <button onClick={() => toggleCompare(h.id)} title="Compare"
-                      className={`w-6 h-6 rounded flex items-center justify-center transition-colors ${isComp ? "bg-violet-100 text-violet-600 ring-1 ring-violet-300" : "text-stone-300 hover:text-stone-500"}`}><CompareIcon className="w-3.5 h-3.5" /></button>
+                    <button onClick={() => toggleCompare(h.id)} title={isComp ? "Remove from compare" : "Add to compare"}
+                      className={`w-6 h-6 rounded flex items-center justify-center transition-colors ${isComp ? "bg-violet-100 text-violet-600 ring-1 ring-violet-300" : "text-stone-300 hover:text-violet-400 hover:bg-violet-50"}`}><CompareIcon className="w-3.5 h-3.5" /></button>
                   </td>
                   <td className="py-2.5 px-3" onClick={(e) => e.stopPropagation()}>
-                    {h.url && <a href={h.url} target="_blank" rel="noreferrer" className="text-sky-400 hover:text-sky-600 transition-colors"><LinkIcon className="w-4 h-4" /></a>}
+                    {h.url && <a href={h.url} target="_blank" rel="noreferrer" title="Open listing" className="text-sky-400 hover:text-sky-600 transition-colors"><LinkIcon className="w-4 h-4" /></a>}
+                  </td>
+                  <td className="py-2.5 px-3" onClick={(e) => e.stopPropagation()}>
+                    <button onClick={() => { if (window.confirm(`Remove "${h.address || "this listing"}" from your list?`)) { trackDeletion(h.address); setHomes((p) => p.filter((x) => x.id !== h.id)); }; }}
+                      title="Remove listing"
+                      className="w-6 h-6 rounded flex items-center justify-center text-stone-300 hover:text-red-400 hover:bg-red-50 transition-colors opacity-0 group-hover:opacity-100">
+                      <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+                    </button>
                   </td>
                 </tr>
               );
@@ -1261,7 +1315,7 @@ function analyzeOffer(home, allHomes, soldComps = []) {
   };
 }
 
-function HomeDetailScreen({ home, onBack, onUpdate, compareList, toggleCompare, fin, navList = [], onNavigate, allHomes = [], soldComps = [], onFilterBySchool, maxBudget }) {
+function HomeDetailScreen({ home, onBack, onUpdate, onDelete, compareList, toggleCompare, fin, navList = [], onNavigate, allHomes = [], soldComps = [], onFilterBySchool, maxBudget }) {
   const swipeRef = useRef(null);
   const touchStart = useRef(null);
   const touchDelta = useRef(0);
@@ -1430,6 +1484,18 @@ function HomeDetailScreen({ home, onBack, onUpdate, compareList, toggleCompare, 
   const [schoolLoading, setSchoolLoading] = useState(false);
   const [parks, setParks] = useState(home.parks || null);
   const [parksLoading, setParksLoading] = useState(false);
+  const [commutes, setCommutes] = useState({});
+
+  // Fetch OSRM commute times
+  useEffect(() => {
+    if (!home.lat || !home.lng || !fin.places?.length) return;
+    setCommutes({});
+    fin.places.forEach((place, i) => {
+      fetchCommute(home.lat, home.lng, place.lat, place.lng).then((r) => {
+        if (r) setCommutes(prev => ({ ...prev, [i]: r }));
+      });
+    });
+  }, [home.id, home.lat, home.lng, fin.places]);
   const [groceries, setGroceries] = useState(home.groceries || null);
   const [groceriesLoading, setGroceriesLoading] = useState(false);
 
@@ -1445,7 +1511,7 @@ function HomeDetailScreen({ home, onBack, onUpdate, compareList, toggleCompare, 
     if (flood || home.flood) { if (home.flood) setFlood(home.flood); return; }
     let cancelled = false;
     setFloodLoading(true);
-    fetchFloodZone(home.address, home.city, home.state, home.zip).then((result) => {
+    fetchFloodZone(home.address, home.city, home.state, home.zip, home.lat, home.lng).then((result) => {
       if (cancelled) return;
       setFloodLoading(false);
       if (result?.zone) { setFlood(result); onUpdate(home.id, { flood: result }); }
@@ -1457,7 +1523,7 @@ function HomeDetailScreen({ home, onBack, onUpdate, compareList, toggleCompare, 
     if (crime || home.crime) { if (home.crime) setCrime(home.crime); return; }
     let cancelled = false;
     setCrimeLoading(true);
-    fetchCrime(home.address, home.city, home.state, home.zip).then((result) => {
+    fetchCrime(home.address, home.city, home.state, home.zip, home.lat, home.lng).then((result) => {
       if (cancelled) return;
       setCrimeLoading(false);
       if (result?.risk) { setCrime(result); onUpdate(home.id, { crime: result }); }
@@ -1531,9 +1597,9 @@ function HomeDetailScreen({ home, onBack, onUpdate, compareList, toggleCompare, 
         transition: 'transform 0.25s ease-out, opacity 0.25s ease-out',
       } : undefined}>
       {/* Header */}
-      <div className="sticky top-0 md:top-16 z-30 bg-white/95 backdrop-blur-sm border-b border-stone-200 px-4 py-3 md:px-6">
+      <div className="sticky top-0 md:top-16 z-30 bg-white border-b border-stone-200 px-4 py-3 md:px-6">
         <div className="flex items-center gap-3 max-w-5xl mx-auto">
-          <button onClick={onBack} className="w-10 h-10 flex items-center justify-center rounded-xl hover:bg-stone-100 active:bg-stone-200 text-stone-500 -ml-2 transition-colors"><BackIcon className="w-5 h-5" /></button>
+          <button onClick={onBack} title="Back to list" className="w-10 h-10 flex items-center justify-center rounded-xl hover:bg-stone-100 active:bg-stone-200 text-stone-500 -ml-2 transition-colors"><BackIcon className="w-5 h-5" /></button>
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2">
               <h1 className="font-bold text-stone-800 truncate text-base md:text-lg">{home.address}</h1>
@@ -1543,11 +1609,11 @@ function HomeDetailScreen({ home, onBack, onUpdate, compareList, toggleCompare, 
           </div>
           {navList.length > 1 && (
             <div className="flex items-center gap-1 flex-shrink-0">
-              <button onClick={() => doNavigate(-1)} disabled={!hasPrev}
+              <button onClick={() => doNavigate(-1)} disabled={!hasPrev} title="Previous home"
                 className={`w-8 h-8 flex items-center justify-center rounded-lg transition-colors ${hasPrev ? "text-stone-500 hover:bg-stone-100 active:bg-stone-200" : "text-stone-200"}`}>
                 <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}><path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" /></svg>
               </button>
-              <button onClick={() => doNavigate(1)} disabled={!hasNext}
+              <button onClick={() => doNavigate(1)} disabled={!hasNext} title="Next home"
                 className={`w-8 h-8 flex items-center justify-center rounded-lg transition-colors ${hasNext ? "text-stone-500 hover:bg-stone-100 active:bg-stone-200" : "text-stone-200"}`}>
                 <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}><path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" /></svg>
               </button>
@@ -1555,15 +1621,23 @@ function HomeDetailScreen({ home, onBack, onUpdate, compareList, toggleCompare, 
           )}
           <div className="flex items-center gap-2 flex-shrink-0">
             <button onClick={() => onUpdate(home.id, { favorite: !home.favorite })}
-              className={`w-10 h-10 flex items-center justify-center rounded-xl border transition-colors star-tap ${home.favorite ? "bg-amber-50 border-amber-200 text-amber-400" : "bg-stone-50 border-stone-200 text-stone-300 hover:text-amber-300"}`}>
+              title={home.favorite ? "Unfavorite" : "Favorite"}
+              className={`w-10 h-10 flex items-center justify-center rounded-xl border transition-colors star-tap ${home.favorite ? "bg-amber-50 border-amber-200 text-amber-400" : "bg-stone-50 border-stone-200 text-stone-300 hover:text-amber-300 hover:border-amber-200 hover:bg-amber-50/50"}`}>
               <StarIcon filled={home.favorite} className="w-5 h-5" />
             </button>
             <StatusBadge status={home.status} />
             {home.url && (
-              <a href={home.url} target="_blank" rel="noreferrer"
+              <a href={home.url} target="_blank" rel="noreferrer" title="Open listing"
                 className="w-10 h-10 flex items-center justify-center rounded-xl bg-sky-50 border border-sky-200 text-sky-600 hover:bg-sky-100 active:bg-sky-200 transition-colors">
                 <LinkIcon className="w-4 h-4" />
               </a>
+            )}
+            {onDelete && (
+              <button onClick={() => { if (window.confirm(`Remove "${home.address || "this listing"}" from your list?`)) { onDelete(home.id); onBack(); } }}
+                title="Remove listing"
+                className="w-10 h-10 flex items-center justify-center rounded-xl bg-stone-50 border border-stone-200 text-stone-400 hover:text-red-500 hover:bg-red-50 hover:border-red-200 active:bg-red-100 transition-colors">
+                <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+              </button>
             )}
           </div>
         </div>
@@ -2050,6 +2124,13 @@ function HomeDetailScreen({ home, onBack, onUpdate, compareList, toggleCompare, 
             <div className="flex items-center gap-2 mb-3">
               <svg className="w-4 h-4 text-orange-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M3 3h2l.4 2M7 13h10l4-8H5.4M7 13L5.4 5M7 13l-2.293 2.293c-.63.63-.184 1.707.707 1.707H17m0 0a2 2 0 100 4 2 2 0 000-4zm-8 2a2 2 0 100 4 2 2 0 000-4z" /></svg>
               <h3 className="text-sm font-semibold text-stone-700">Nearest Groceries</h3>
+              {groceries && (() => {
+                const stores = [groceries.heb, groceries.costco, groceries.wholefoods, groceries.traderjoes].filter(Boolean);
+                if (stores.length === 0) return null;
+                const pins = stores.map(s => `${s.lat},${s.lng}`).join("/");
+                const mapUrl = `https://www.google.com/maps/dir/${home.lat},${home.lng}/${pins}`;
+                return <a href={mapUrl} target="_blank" rel="noreferrer" title="View stores on Google Maps" className="ml-auto text-xs font-medium text-orange-500 hover:text-orange-600 flex items-center gap-1 transition-colors"><svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" /><path strokeLinecap="round" strokeLinejoin="round" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" /></svg>Map</a>;
+              })()}
             </div>
 
             {groceriesLoading && <div className="text-sm text-stone-400 animate-pulse py-4">Finding grocery stores...</div>}
@@ -2112,7 +2193,7 @@ function HomeDetailScreen({ home, onBack, onUpdate, compareList, toggleCompare, 
               </div>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 {fin.places.map((place, i) => {
-                  const c = estimateCommute(home.lat, home.lng, place.lat, place.lng);
+                  const c = commutes[i] || estimateCommute(home.lat, home.lng, place.lat, place.lng);
                   if (!c) return null;
                   const color = c.minutes <= 20 ? "sky" : c.minutes <= 35 ? "amber" : "orange";
                   return (
@@ -2135,7 +2216,7 @@ function HomeDetailScreen({ home, onBack, onUpdate, compareList, toggleCompare, 
                   );
                 })}
               </div>
-              <p className="text-[10px] text-stone-400 mt-2.5">Estimated drive times based on typical Houston traffic. Actual times vary by route and time of day.</p>
+              <p className="text-[10px] text-stone-400 mt-2.5">{Object.values(commutes).some(x => x?.source === "osrm") ? "Drive times via OSRM routing + Houston traffic factor." : "Loading route data..."}</p>
             </div>
           </div>
         )}
@@ -2208,7 +2289,7 @@ function HomeDetailScreen({ home, onBack, onUpdate, compareList, toggleCompare, 
                   <button onClick={() => {
                     setFloodLoading(true);
                     setFlood(null);
-                    fetchFloodZone(home.address, home.city, home.state, home.zip).then((r) => {
+                    fetchFloodZone(home.address, home.city, home.state, home.zip, home.lat, home.lng).then((r) => {
                       setFloodLoading(false);
                       if (r && r.zone) { setFlood(r); onUpdate(home.id, { flood: r }); }
                     });
@@ -2222,7 +2303,7 @@ function HomeDetailScreen({ home, onBack, onUpdate, compareList, toggleCompare, 
                 <span className="text-sm text-stone-400">No flood zone data available</span>
                 <button onClick={() => {
                   setFloodLoading(true);
-                  fetchFloodZone(home.address, home.city, home.state, home.zip).then((r) => {
+                  fetchFloodZone(home.address, home.city, home.state, home.zip, home.lat, home.lng).then((r) => {
                     setFloodLoading(false);
                     if (r && r.zone) { setFlood(r); onUpdate(home.id, { flood: r }); }
                   });
@@ -2334,7 +2415,7 @@ function HomeDetailScreen({ home, onBack, onUpdate, compareList, toggleCompare, 
                   <button onClick={() => {
                     setCrimeLoading(true);
                     setCrime(null);
-                    fetchCrime(home.address, home.city, home.state, home.zip).then((r) => {
+                    fetchCrime(home.address, home.city, home.state, home.zip, home.lat, home.lng).then((r) => {
                       setCrimeLoading(false);
                       if (r && r.risk) { setCrime(r); onUpdate(home.id, { crime: r }); }
                     });
@@ -2348,7 +2429,7 @@ function HomeDetailScreen({ home, onBack, onUpdate, compareList, toggleCompare, 
                 <span className="text-sm text-stone-400">No crime data available</span>
                 <button onClick={() => {
                   setCrimeLoading(true);
-                  fetchCrime(home.address, home.city, home.state, home.zip).then((r) => {
+                  fetchCrime(home.address, home.city, home.state, home.zip, home.lat, home.lng).then((r) => {
                     setCrimeLoading(false);
                     if (r && r.risk) { setCrime(r); onUpdate(home.id, { crime: r }); }
                   });
@@ -2377,14 +2458,14 @@ function HomeDetailScreen({ home, onBack, onUpdate, compareList, toggleCompare, 
                     <div className="text-[10px] text-violet-500 tabular-nums">{((offer.aggressive / home.price - 1) * 100).toFixed(1)}%</div>
                   </div>
                   <div className="border-x border-violet-200/50">
-                    <div className="text-[10px] text-stone-400 uppercase tracking-wider font-semibold mb-1">Competitive</div>
-                    <div className="text-xl font-bold text-violet-800 tabular-nums">{fmtC(offer.competitive)}</div>
-                    <div className="text-[10px] text-violet-500 tabular-nums">{((offer.competitive / home.price - 1) * 100).toFixed(1)}%</div>
+                    <div className="text-[10px] text-stone-400 uppercase tracking-wider font-semibold mb-1">Strong</div>
+                    <div className="text-xl font-bold text-violet-800 tabular-nums">{fmtC(offer.strong)}</div>
+                    <div className="text-[10px] text-violet-500 tabular-nums">{((offer.strong / home.price - 1) * 100).toFixed(1)}%</div>
                   </div>
                   <div>
-                    <div className="text-[10px] text-stone-400 uppercase tracking-wider font-semibold mb-1">Strong</div>
-                    <div className="text-lg font-bold text-violet-700 tabular-nums">{fmtC(offer.strong)}</div>
-                    <div className="text-[10px] text-violet-500 tabular-nums">{((offer.strong / home.price - 1) * 100).toFixed(1)}%</div>
+                    <div className="text-[10px] text-stone-400 uppercase tracking-wider font-semibold mb-1">Competitive</div>
+                    <div className="text-lg font-bold text-violet-700 tabular-nums">{fmtC(offer.competitive)}</div>
+                    <div className="text-[10px] text-violet-500 tabular-nums">{((offer.competitive / home.price - 1) * 100).toFixed(1)}%</div>
                   </div>
                 </div>
                 {/* Range bar */}
@@ -3498,8 +3579,8 @@ export default function CribsApp() {
 
         try {
           const promises = [];
-          if (needs.includes("flood")) promises.push(fetchFloodZone(h.address, h.city, h.state, h.zip).catch(() => null).then(r => ["flood", r]));
-          if (needs.includes("crime")) promises.push(fetchCrime(h.address, h.city, h.state, h.zip).catch(() => null).then(r => ["crime", r]));
+          if (needs.includes("flood")) promises.push(fetchFloodZone(h.address, h.city, h.state, h.zip, h.lat, h.lng).catch(() => null).then(r => ["flood", r]));
+          if (needs.includes("crime")) promises.push(fetchCrime(h.address, h.city, h.state, h.zip, h.lat, h.lng).catch(() => null).then(r => ["crime", r]));
           if (needs.includes("school")) promises.push(fetchSchool(h.address, h.city, h.state, h.zip).catch(() => null).then(r => ["school", r]));
           if (needs.includes("parks")) promises.push(fetchNearbyParks(h.address, h.city, h.state, h.zip, h.lat, h.lng).catch(() => null).then(r => ["parks", r]));
           if (needs.includes("groceries")) promises.push(fetchNearbyGroceries(h.lat, h.lng).catch(() => null).then(r => ["groceries", r]));
@@ -3536,46 +3617,56 @@ export default function CribsApp() {
     return () => { cancelled = true; clearTimeout(safetyTimeout); };
   }, []);
 
+  const [importDialog, setImportDialog] = useState(null);
+  const [deletedAddresses, setDeletedAddresses] = useState(() => {
+    try { return JSON.parse(localStorage.getItem("cribs_deleted") || "[]"); } catch { return []; }
+  });
+  const trackDeletion = (addr) => {
+    if (!addr) return;
+    setDeletedAddresses(prev => {
+      const next = [...new Set([...prev, addr.toLowerCase()])];
+      localStorage.setItem("cribs_deleted", JSON.stringify(next));
+      return next;
+    });
+  };
+
   const handleImport = (newHomes) => {
+    const byAddr = new Map(homes.map((h) => [h.address?.toLowerCase(), h]));
+    const newList = [], dupeList = [], deletedList = [];
+    for (const incoming of newHomes) {
+      const key = incoming.address?.toLowerCase();
+      if (byAddr.has(key)) { dupeList.push(incoming); }
+      else if (deletedAddresses.includes(key)) { deletedList.push(incoming); }
+      else { newList.push(incoming); }
+    }
+    setImportDialog({ newList, dupeList, deletedList, includeDeleted: false });
+  };
+
+  const confirmImport = () => {
+    if (!importDialog) return;
+    const { newList, dupeList, deletedList, includeDeleted } = importDialog;
     setHomes((prev) => {
       const byAddr = new Map(prev.map((h) => [h.address?.toLowerCase(), h]));
       const merged = [...prev];
-      for (const incoming of newHomes) {
+      for (const incoming of dupeList) {
         const key = incoming.address?.toLowerCase();
         const existing = byAddr.get(key);
         if (existing) {
-          // Update Redfin-sourced fields, preserve user-entered metadata
           const idx = merged.findIndex((h) => h.id === existing.id);
-          if (idx !== -1) {
-            merged[idx] = {
-              ...existing,
-              // Redfin fields (always overwrite with fresh data)
-              price: incoming.price ?? existing.price,
-              beds: incoming.beds ?? existing.beds,
-              baths: incoming.baths ?? existing.baths,
-              sqft: incoming.sqft ?? existing.sqft,
-              lotSize: incoming.lotSize ?? existing.lotSize,
-              yearBuilt: incoming.yearBuilt ?? existing.yearBuilt,
-              dom: incoming.dom ?? existing.dom,
-              ppsf: incoming.ppsf ?? existing.ppsf,
-              hoa: incoming.hoa ?? existing.hoa,
-              propertyType: incoming.propertyType || existing.propertyType,
-              status: incoming.status || existing.status,
-              url: incoming.url || existing.url,
-              city: incoming.city || existing.city,
-              state: incoming.state || existing.state,
-              zip: incoming.zip || existing.zip,
-              address: incoming.address || existing.address,
-              // User metadata preserved: id, viewed, favorite, notes, ratings, pool, appraisal, flood, crime, school
-            };
-          }
-        } else {
-          merged.push(incoming);
-          byAddr.set(key, incoming);
+          if (idx !== -1) merged[idx] = { ...existing, price: incoming.price ?? existing.price, beds: incoming.beds ?? existing.beds, baths: incoming.baths ?? existing.baths, sqft: incoming.sqft ?? existing.sqft, lotSize: incoming.lotSize ?? existing.lotSize, yearBuilt: incoming.yearBuilt ?? existing.yearBuilt, dom: incoming.dom ?? existing.dom, ppsf: incoming.ppsf ?? existing.ppsf, hoa: incoming.hoa ?? existing.hoa, propertyType: incoming.propertyType || existing.propertyType, status: incoming.status || existing.status, url: incoming.url || existing.url, city: incoming.city || existing.city, state: incoming.state || existing.state, zip: incoming.zip || existing.zip, address: incoming.address || existing.address };
         }
+      }
+      for (const h of newList) { merged.push(h); }
+      if (includeDeleted) {
+        for (const h of deletedList) { merged.push(h); }
+        const removedKeys = new Set(deletedList.map(d => d.address?.toLowerCase()));
+        const updated = deletedAddresses.filter(a => !removedKeys.has(a));
+        localStorage.setItem("cribs_deleted", JSON.stringify(updated));
+        setDeletedAddresses(updated);
       }
       return merged;
     });
+    setImportDialog(null);
   };
 
   const toggleCompare = (id) => {
@@ -3627,7 +3718,7 @@ export default function CribsApp() {
               <svg className="w-5 h-5" viewBox="0 0 24 24" fill="white"><path d="M12 3L2 12h3v8h5v-5h4v5h5v-8h3L12 3z"/></svg>
             </div>
             <h1 className="text-lg font-bold tracking-tight text-stone-800">CRIBS</h1>
-            <span className="text-[10px] text-stone-400 font-medium ml-1 self-end mb-0.5">v1.2.6</span>
+            <span className="text-[10px] text-stone-400 font-medium ml-1 self-end mb-0.5">v1.3.1</span>
           </button>
           <nav className="flex gap-1 bg-stone-100 rounded-lg p-0.5 border border-stone-200">
             <button onClick={goList} className={`px-4 py-2 text-sm font-medium rounded-md transition-colors ${screen === "list" || screen === "detail" ? "bg-white text-sky-600 shadow-sm" : "text-stone-500 hover:text-stone-700"}`}>Homes</button>
@@ -3642,10 +3733,50 @@ export default function CribsApp() {
 
       <div className="max-w-[1600px] mx-auto">
         {screen === "list" && <HomeListScreen homes={homes} setHomes={setHomes} onOpenHome={openHome} compareList={compareList} toggleCompare={toggleCompare} onImport={handleImport} fin={fin} rateInfo={rateInfo} schoolFilter={schoolFilter} setSchoolFilter={setSchoolFilter} maxBudget={maxBudget} enrichDone={enrichDone} />}
-        {screen === "detail" && activeHome && <HomeDetailScreen home={activeHome} onBack={goList} onUpdate={updateHome} compareList={compareList} toggleCompare={toggleCompare} fin={fin} navList={navList} onNavigate={navigateHome} allHomes={homes} soldComps={soldComps} onFilterBySchool={(name) => { setSchoolFilter(name); setScreen("list"); }} maxBudget={maxBudget} />}
+        {screen === "detail" && activeHome && <HomeDetailScreen home={activeHome} onBack={goList} onUpdate={updateHome} onDelete={(id) => { const found = homes.find(x => x.id === id); if (found) trackDeletion(found.address); setHomes((p) => p.filter((x) => x.id !== id)); }} compareList={compareList} toggleCompare={toggleCompare} fin={fin} navList={navList} onNavigate={navigateHome} allHomes={homes} soldComps={soldComps} onFilterBySchool={(name) => { setSchoolFilter(name); setScreen("list"); }} maxBudget={maxBudget} />}
         {screen === "compare" && <CompareScreen homes={homes} compareList={compareList} toggleCompare={toggleCompare} clearCompare={() => setCompareList([])} onOpenHome={openHome} fin={fin} />}
         {screen === "settings" && <SettingsScreen fin={fin} updateFin={updateFin} liveRate={liveRate} rateInfo={rateInfo} homes={homes} setHomes={setHomes} soldComps={soldComps} setSoldComps={setSoldComps} darkMode={darkMode} setDarkMode={setDarkMode} />}
       </div>
+
+      {/* Import Dialog */}
+      {importDialog && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4" onClick={() => setImportDialog(null)}>
+          <div className="bg-white rounded-2xl shadow-xl max-w-sm w-full p-5 space-y-4 anim-scale-in" onClick={(e) => e.stopPropagation()}>
+            <h2 className="text-lg font-bold text-stone-800">Import Summary</h2>
+            <div className="space-y-2.5">
+              <div className="flex items-center justify-between p-3 rounded-xl bg-sky-50 border border-sky-200">
+                <div className="flex items-center gap-2"><span className="text-lg">🆕</span><span className="text-sm font-medium text-stone-700">New Homes</span></div>
+                <span className="text-lg font-bold text-sky-600 tabular-nums">{importDialog.newList.length}</span>
+              </div>
+              <div className="flex items-center justify-between p-3 rounded-xl bg-amber-50 border border-amber-200">
+                <div className="flex items-center gap-2"><span className="text-lg">🔄</span><span className="text-sm font-medium text-stone-700">Duplicates (will update)</span></div>
+                <span className="text-lg font-bold text-amber-600 tabular-nums">{importDialog.dupeList.length}</span>
+              </div>
+              {importDialog.deletedList.length > 0 && (
+                <div className="p-3 rounded-xl bg-orange-50 border border-orange-200 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2"><span className="text-lg">🗑️</span><span className="text-sm font-medium text-stone-700">Previously Deleted</span></div>
+                    <span className="text-lg font-bold text-orange-600 tabular-nums">{importDialog.deletedList.length}</span>
+                  </div>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input type="checkbox" checked={importDialog.includeDeleted} onChange={(e) => setImportDialog(prev => ({ ...prev, includeDeleted: e.target.checked }))}
+                      className="w-4 h-4 rounded border-stone-300 text-orange-500 focus:ring-orange-200" />
+                    <span className="text-xs text-stone-600">Re-import deleted homes</span>
+                  </label>
+                </div>
+              )}
+            </div>
+            <div className="flex gap-2.5 pt-1">
+              <button onClick={() => setImportDialog(null)}
+                className="flex-1 py-3 rounded-xl font-medium text-sm border border-stone-200 text-stone-600 hover:bg-stone-50 active:bg-stone-100 transition-colors">Cancel</button>
+              <button onClick={confirmImport}
+                className="flex-1 py-3 rounded-xl font-medium text-sm bg-sky-500 text-white hover:bg-sky-600 active:bg-sky-700 shadow-sm shadow-sky-200 transition-colors">
+                Import {importDialog.newList.length + importDialog.dupeList.length + (importDialog.includeDeleted ? importDialog.deletedList.length : 0)} Homes
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Mobile bottom nav */}
       <nav className="md:hidden fixed bottom-0 inset-x-0 bg-white/95 backdrop-blur-md border-t border-stone-200 z-50 safe-area-pb">
@@ -3685,7 +3816,8 @@ export default function CribsApp() {
         .anim-pop { animation: popIn 0.35s ease-out forwards; }
         .anim-grow-bar { animation: growBar 0.8s ease-out forwards; transform-origin: left; }
         .anim-pulse { animation: pulseSubtle 2s ease-in-out infinite; }
-        .star-tap { transition: transform 0.15s ease; }
+        .star-tap { transition: transform 0.15s ease, filter 0.2s ease, opacity 0.2s ease; }
+        .star-tap:hover { transform: scale(1.15); filter: drop-shadow(0 0 4px rgba(251,191,36,0.35)); }
         .star-tap:active { transform: scale(1.3); }
         @media (hover: hover) {
           .card-hover { transition: transform 0.2s ease, box-shadow 0.2s ease; }
