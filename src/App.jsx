@@ -966,7 +966,7 @@ function HomeListScreen({ homes, setHomes, onOpenHome, compareList, toggleCompar
         if (sortKey === "schoolRating") return h.school?.rating ?? null;
         if (sortKey === "floodRisk") { const m = { low: 1, moderate: 2, high: 3 }; return m[h.flood?.risk] ?? null; }
         if (sortKey === "nearestPark") return h.parks?.nearestDistanceMi ?? null;
-        if (sortKey === "appraisalPct") return h.appraisal && h.price ? ((h.price - h.appraisal.value) / h.appraisal.value * 100) : null;
+        if (sortKey === "appraisalPct") return h.appraisal?.value && h.price ? ((h.price - h.appraisal.value) / h.appraisal.value * 100) : null;
         if (sortKey === "value") return valueScores[h.id] ?? null;
         return h[sortKey];
       };
@@ -1229,7 +1229,7 @@ function HomeListScreen({ homes, setHomes, onOpenHome, compareList, toggleCompar
                   <td className="py-2.5 px-3 text-stone-500">{h.city || "—"}</td>
                   <td className="py-2.5 px-3 text-stone-900 font-semibold tabular-nums">{fmt(h.price)} {maxBudget && <span className={`text-[9px] font-bold ml-1 px-1 py-0.5 rounded ${h.price > maxBudget.maxPrice ? "text-orange-600 bg-orange-50" : "text-teal-600 bg-teal-50"}`}>{h.price > maxBudget.maxPrice ? "OVER" : "OK"}</span>}</td>
                   <td className="py-2.5 px-3 tabular-nums text-xs font-semibold">
-                    {h.appraisal && h.price ? (() => {
+                    {h.appraisal?.value && h.price ? (() => {
                       const pct = ((h.price - h.appraisal.value) / h.appraisal.value * 100);
                       return <span className={pct > 0 ? "text-orange-500" : pct < 0 ? "text-sky-600" : "text-stone-400"}>{pct > 0 ? "+" : ""}{pct.toFixed(0)}%</span>;
                     })() : <span className="text-stone-300">—</span>}
@@ -1834,7 +1834,7 @@ function HomeDetailScreen({ home, onBack, onUpdate, onDelete, compareList, toggl
                 <span className="flex items-center gap-1.5">
                   <SchoolIcon tier={school.tier} />
                   <span className={`text-sm font-medium ${school.tier === "great" ? "text-sky-600" : school.tier === "good" ? "text-amber-500" : "text-orange-500"}`}>
-                    {school.rating}/10
+                    {school.rating ? school.rating + "/10" : school.tier === "great" ? "A" : school.tier === "good" ? "B" : "C"}
                   </span>
                 </span>
               )}
@@ -2046,7 +2046,7 @@ function HomeDetailScreen({ home, onBack, onUpdate, onDelete, compareList, toggl
               </div>
               {school && school.rating && (
                 <div className="flex items-center gap-2">
-                  <span className={`text-sm font-bold ${school.tier === "great" ? "text-sky-600" : school.tier === "good" ? "text-amber-600" : "text-orange-600"}`}>{school.rating}/10</span>
+                  <span className={`text-sm font-bold ${school.tier === "great" ? "text-sky-600" : school.tier === "good" ? "text-amber-600" : "text-orange-600"}`}>{school.rating ? school.rating + "/10" : school.tier === "great" ? "A" : school.tier === "good" ? "B" : "C"}</span>
                   <span className={`text-xs font-semibold px-2.5 py-1 rounded-full ${school.tier === "great" ? "bg-sky-100 text-sky-600" : school.tier === "good" ? "bg-amber-100 text-amber-600" : "bg-orange-100 text-orange-600"}`}>
                     {school.tier === "great" ? "Great" : school.tier === "good" ? "Good" : "Below Avg"}
                   </span>
@@ -3724,8 +3724,8 @@ export default function CribsApp() {
           // are from a pre-enrichment version, reset to baked-in defaults.
           const hasEnrichment = p.some(h => h.flood && h.crime);
           if (hasEnrichment) {
-            // v1.4.4 migration: clear old school/appraisal data from Anthropic API so it re-fetches from NCES/HCAD
-            const needsMigration = p.some(h => h.school?.ratingSource === "GreatSchools" || h.school?.nicheGrade || (h.appraisal && h.appraisal.source !== "HCAD (Harris County Appraisal District)"));
+            // v1.4.6 migration: clear old school/appraisal data from Anthropic API so it re-fetches from NCES/HCAD
+            const needsMigration = p.some(h => h.school?.ratingSource === "GreatSchools" || h.school?.nicheGrade || (h.appraisal && !h.appraisal.value) || (h.appraisal && h.appraisal.source !== "HCAD (Harris County Appraisal District)"));
             if (needsMigration) {
               const migrated = p.map(h => ({ ...h, school: null, appraisal: null }));
               localStorage.setItem("cribs_homes", JSON.stringify(migrated));
@@ -3865,7 +3865,6 @@ export default function CribsApp() {
   const enrichingRef = useRef(false);
   const [enrichDone, setEnrichDone] = useState(false);
   const [enrichTrigger, setEnrichTrigger] = useState(0);
-  const unenrichedCount = homes.filter(h => !h.flood || !h.crime || !h.school || !h.parks || !h.groceries || !h.appraisal).length;
   useEffect(() => {
     if (enrichingRef.current) return;
     // Skip if all homes already have data
@@ -3908,7 +3907,7 @@ export default function CribsApp() {
             if (type === "school" && data?.schoolName) updates.school = data;
             if (type === "parks" && data?.parks) updates.parks = data;
             if (type === "groceries" && data) updates.groceries = data;
-            if (type === "appraisal" && data?.appraisalValue) updates.appraisal = data;
+            if (type === "appraisal" && data?.appraisalValue) updates.appraisal = { value: data.appraisalValue, year: data.appraisalYear, source: data.source };
           }
           if (Object.keys(updates).length > 0) {
             setHomes(prev => prev.map(ph => ph.id === h.id ? { ...ph, ...updates } : ph));
@@ -3929,7 +3928,7 @@ export default function CribsApp() {
     const safetyTimeout = setTimeout(() => { if (!cancelled) { setEnrichDone(true); enrichingRef.current = false; } }, 60000);
     enrich([...homes]).then(() => { clearTimeout(safetyTimeout); if (!cancelled) { setEnrichDone(true); enrichingRef.current = false; } });
     return () => { cancelled = true; clearTimeout(safetyTimeout); enrichingRef.current = false; };
-  }, [unenrichedCount, enrichTrigger]);
+  }, [enrichTrigger]);
 
   const [importDialog, setImportDialog] = useState(null);
   const [deletedAddresses, setDeletedAddresses] = useState(() => {
@@ -3982,6 +3981,10 @@ export default function CribsApp() {
       return merged;
     });
     setImportDialog(null);
+    // Trigger enrichment for newly imported homes
+    enrichingRef.current = false;
+    setEnrichDone(false);
+    setEnrichTrigger(t => t + 1);
   };
 
   const toggleCompare = (id) => {
@@ -4043,7 +4046,7 @@ export default function CribsApp() {
               <svg className="w-5 h-5" viewBox="0 0 24 24" fill="white"><path d="M12 3L2 12h3v8h5v-5h4v5h5v-8h3L12 3z"/></svg>
             </div>
             <h1 className="text-lg font-bold tracking-tight text-stone-800">CRIBS</h1>
-            <span className="text-[10px] text-stone-400 font-medium ml-1 self-end mb-0.5">v1.4.4</span>
+            <span className="text-[10px] text-stone-400 font-medium ml-1 self-end mb-0.5">v1.4.6</span>
           </button>
           <nav className="flex gap-1 bg-stone-100 rounded-lg p-0.5 border border-stone-200">
             <button onClick={goList} className={`px-4 py-2 text-sm font-medium rounded-md transition-colors ${screen === "list" || screen === "detail" ? "bg-white text-sky-600 shadow-sm" : "text-stone-500 hover:text-stone-700"}`}>Homes</button>
