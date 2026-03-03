@@ -1736,18 +1736,9 @@ function HomeDetailScreen({ home, onBack, onUpdate, onDelete, compareList, toggl
   const maxVal = Math.max(...projection.map((p) => p.value));
 
   return (
-    <div ref={swipeRef} className={`min-h-screen pb-24 md:pb-6 overflow-x-hidden ${slideClass}`}
-      style={dragX !== 0 ? {
-        transform: `translateX(${dragX}px)`,
-        opacity: Math.max(0.5, 1 - Math.abs(dragX) / 500),
-        transition: 'none',
-      } : !slideClass ? {
-        transform: 'translateX(0)',
-        opacity: 1,
-        transition: 'transform 0.25s ease-out, opacity 0.25s ease-out',
-      } : undefined}>
-      {/* Header */}
-      <div className="fixed top-0 md:top-16 left-0 right-0 z-[45] bg-white/95 backdrop-blur-md border-b border-stone-200 px-4 py-3 md:px-6 shadow-sm">
+    <>
+    {/* Header — outside swipe container so transform doesn't break fixed positioning */}
+    <div className="fixed top-0 md:top-16 left-0 right-0 z-[45] bg-white/95 backdrop-blur-md border-b border-stone-200 px-4 py-3 md:px-6 shadow-sm">
         <div className="flex items-center gap-3 max-w-5xl mx-auto">
           <button onClick={onBack} title="Back to list" className="w-10 h-10 flex items-center justify-center rounded-xl hover:bg-stone-100 active:bg-stone-200 text-stone-500 -ml-2 transition-colors"><BackIcon className="w-5 h-5" /></button>
           <div className="flex-1 min-w-0">
@@ -1792,6 +1783,16 @@ function HomeDetailScreen({ home, onBack, onUpdate, onDelete, compareList, toggl
           </div>
         </div>
       </div>
+      <div ref={swipeRef} className={`min-h-screen pb-24 md:pb-6 overflow-x-hidden ${slideClass}`}
+      style={dragX !== 0 ? {
+        transform: `translateX(${dragX}px)`,
+        opacity: Math.max(0.5, 1 - Math.abs(dragX) / 500),
+        transition: 'none',
+      } : !slideClass ? {
+        transform: 'translateX(0)',
+        opacity: 1,
+        transition: 'transform 0.25s ease-out, opacity 0.25s ease-out',
+      } : undefined}>
       <div className="h-16 md:h-[60px]" /> {/* Spacer for fixed detail header */}
 
       <div className="relative z-0 max-w-5xl mx-auto px-4 md:px-6 py-5 space-y-4">
@@ -2990,6 +2991,7 @@ function HomeDetailScreen({ home, onBack, onUpdate, onDelete, compareList, toggl
 
       </div>
     </div>
+    </>
   );
 }
 
@@ -3682,6 +3684,48 @@ function SettingsScreen({ fin, updateFin, liveRate, rateInfo, homes = [], setHom
           </div>
         </div>
 
+        {/* Clear All Homes */}
+        <div className="bg-white border border-stone-200 rounded-2xl p-4 anim-fade-up" style={{ animationDelay: '315ms' }}>
+          <h3 className="text-sm font-semibold text-stone-700 mb-2">Clear All Homes</h3>
+          <p className="text-xs text-stone-400 mb-3">Remove all homes from the list. Your notes, favorites, ratings, and other personal data will be saved and automatically restored if you re-import the same addresses.</p>
+          <button onClick={() => { if (window.confirm("Clear all homes? Your notes, favorites, ratings, and pool/tax overrides will be saved and restored on re-import.")) {
+            // Save user-entered data before clearing
+            const userDataCache = {};
+            let savedCount = 0;
+            homes.forEach(h => {
+              const key = normalizeAddr(h.address);
+              if (!key) return;
+              const userData = {};
+              if (h.notes) userData.notes = h.notes;
+              if (h.favorite) userData.favorite = h.favorite;
+              if (h.viewed) userData.viewed = h.viewed;
+              if (h.ratings && Object.keys(h.ratings).length > 0) userData.ratings = h.ratings;
+              if (h.pool != null) userData.pool = h.pool;
+              if (h.taxRate != null) userData.taxRate = h.taxRate;
+              if (Object.keys(userData).length > 0) {
+                userDataCache[key] = userData;
+                savedCount++;
+              }
+            });
+            // Merge with existing cache (don't overwrite older entries if current home has no user data)
+            try {
+              const existing = JSON.parse(localStorage.getItem("cribs_user_data") || "{}");
+              const merged = { ...existing, ...userDataCache };
+              localStorage.setItem("cribs_user_data", JSON.stringify(merged));
+            } catch {}
+            setHomes([]);
+          }}}
+            className="text-xs font-medium text-stone-600 hover:text-stone-800 bg-stone-50 hover:bg-stone-100 px-3 py-1.5 rounded-lg border border-stone-200 transition-colors">Clear All Homes</button>
+          {(() => {
+            try {
+              const cached = JSON.parse(localStorage.getItem("cribs_user_data") || "{}");
+              const count = Object.keys(cached).length;
+              if (count > 0) return <p className="text-[10px] text-stone-400 mt-2">{count} home{count !== 1 ? "s" : ""} with saved personal data (will restore on re-import)</p>;
+            } catch {}
+            return null;
+          })()}
+        </div>
+
         {/* Reset Data */}
         <div className="bg-white border border-orange-200 rounded-2xl p-4 anim-fade-up" style={{ animationDelay: '320ms' }}>
           <h3 className="text-sm font-semibold text-orange-700 mb-2">Reset Data</h3>
@@ -3707,7 +3751,7 @@ export default function CribsApp() {
           // are from a pre-enrichment version, reset to baked-in defaults.
           const hasEnrichment = p.some(h => h.flood && h.crime);
           if (hasEnrichment) {
-            // v1.4.8 migration: clear old school/appraisal data from Anthropic API so it re-fetches from NCES/HCAD
+            // v1.5.0 migration: clear old school/appraisal data from Anthropic API so it re-fetches from NCES/HCAD
             const needsMigration = p.some(h => h.school?.ratingSource === "GreatSchools" || h.school?.nicheGrade || (h.appraisal && !h.appraisal.value) || (h.appraisal && h.appraisal.source !== "HCAD (Harris County Appraisal District)"));
             if (needsMigration) {
               const migrated = p.map(h => ({ ...h, school: null, appraisal: null }));
@@ -3936,12 +3980,30 @@ export default function CribsApp() {
       else if (deletedAddresses.some(a => normalizeAddr(a) === key)) { deletedList.push(incoming); }
       else { newList.push(incoming); }
     }
-    setImportDialog({ newList, dupeList, deletedList, includeDeleted: false });
+    setImportDialog({ newList, dupeList, deletedList, includeDeleted: false, markFavorites: false });
   };
 
   const confirmImport = () => {
     if (!importDialog) return;
-    const { newList, dupeList, deletedList, includeDeleted } = importDialog;
+    const { newList, dupeList, deletedList, includeDeleted, markFavorites } = importDialog;
+    // Load any cached user data from previous clears
+    let userDataCache = {};
+    try { userDataCache = JSON.parse(localStorage.getItem("cribs_user_data") || "{}"); } catch {}
+    const restoreUserData = (h) => {
+      const key = normalizeAddr(h.address);
+      const cached = userDataCache[key];
+      if (!cached) return h;
+      const restored = { ...h };
+      if (cached.notes) restored.notes = cached.notes;
+      if (cached.favorite) restored.favorite = cached.favorite;
+      if (cached.viewed) restored.viewed = cached.viewed;
+      if (cached.ratings) restored.ratings = cached.ratings;
+      if (cached.pool != null) restored.pool = cached.pool;
+      if (cached.taxRate != null) restored.taxRate = cached.taxRate;
+      // Remove from cache after restoring
+      delete userDataCache[key];
+      return restored;
+    };
     setHomes((prev) => {
       const byAddr = new Map(prev.map((h) => [normalizeAddr(h.address), h]));
       const merged = [...prev];
@@ -3950,12 +4012,12 @@ export default function CribsApp() {
         const existing = byAddr.get(key);
         if (existing) {
           const idx = merged.findIndex((h) => h.id === existing.id);
-          if (idx !== -1) merged[idx] = { ...existing, price: incoming.price ?? existing.price, beds: incoming.beds ?? existing.beds, baths: incoming.baths ?? existing.baths, sqft: incoming.sqft ?? existing.sqft, lotSize: incoming.lotSize ?? existing.lotSize, yearBuilt: incoming.yearBuilt ?? existing.yearBuilt, dom: incoming.dom ?? existing.dom, ppsf: incoming.ppsf ?? existing.ppsf, hoa: incoming.hoa ?? existing.hoa, propertyType: incoming.propertyType || existing.propertyType, status: incoming.status || existing.status, url: incoming.url || existing.url, city: incoming.city || existing.city, state: incoming.state || existing.state, zip: incoming.zip || existing.zip, address: incoming.address || existing.address };
+          if (idx !== -1) merged[idx] = { ...existing, price: incoming.price ?? existing.price, beds: incoming.beds ?? existing.beds, baths: incoming.baths ?? existing.baths, sqft: incoming.sqft ?? existing.sqft, lotSize: incoming.lotSize ?? existing.lotSize, yearBuilt: incoming.yearBuilt ?? existing.yearBuilt, dom: incoming.dom ?? existing.dom, ppsf: incoming.ppsf ?? existing.ppsf, hoa: incoming.hoa ?? existing.hoa, propertyType: incoming.propertyType || existing.propertyType, status: incoming.status || existing.status, url: incoming.url || existing.url, city: incoming.city || existing.city, state: incoming.state || existing.state, zip: incoming.zip || existing.zip, address: incoming.address || existing.address, ...(markFavorites ? { favorite: true } : {}) };
         }
       }
-      for (const h of newList) { merged.push(h); }
+      for (const h of newList) { merged.push(restoreUserData(markFavorites ? { ...h, favorite: true } : h)); }
       if (includeDeleted) {
-        for (const h of deletedList) { merged.push(h); }
+        for (const h of deletedList) { merged.push(restoreUserData(markFavorites ? { ...h, favorite: true } : h)); }
         const removedKeys = new Set(deletedList.map(d => normalizeAddr(d.address)));
         const updated = deletedAddresses.filter(a => !removedKeys.has(normalizeAddr(a)));
         localStorage.setItem("cribs_deleted", JSON.stringify(updated));
@@ -3963,6 +4025,8 @@ export default function CribsApp() {
       }
       return merged;
     });
+    // Save updated cache (with restored entries removed)
+    try { localStorage.setItem("cribs_user_data", JSON.stringify(userDataCache)); } catch {}
     setImportDialog(null);
     // Trigger enrichment for newly imported homes
     enrichingRef.current = false;
@@ -4029,7 +4093,7 @@ export default function CribsApp() {
               <svg className="w-5 h-5" viewBox="0 0 24 24" fill="white"><path d="M12 3L2 12h3v8h5v-5h4v5h5v-8h3L12 3z"/></svg>
             </div>
             <h1 className="text-lg font-bold tracking-tight text-stone-800">CRIBS</h1>
-            <span className="text-[10px] text-stone-400 font-medium ml-1 self-end mb-0.5">v1.4.8</span>
+            <span className="text-[10px] text-stone-400 font-medium ml-1 self-end mb-0.5">v1.5.0</span>
           </button>
           <nav className="flex gap-1 bg-stone-100 rounded-lg p-0.5 border border-stone-200">
             <button onClick={goList} className={`px-4 py-2 text-sm font-medium rounded-md transition-colors ${screen === "list" || screen === "detail" ? "bg-white text-sky-600 shadow-sm" : "text-stone-500 hover:text-stone-700"}`}>Homes</button>
@@ -4077,6 +4141,12 @@ export default function CribsApp() {
                 </div>
               )}
             </div>
+            {/* Mark as favorites toggle */}
+            <label className="flex items-center gap-2.5 p-3 rounded-xl bg-amber-50 border border-amber-200 cursor-pointer hover:bg-amber-100/70 transition-colors">
+              <input type="checkbox" checked={importDialog.markFavorites} onChange={(e) => setImportDialog(prev => ({ ...prev, markFavorites: e.target.checked }))}
+                className="w-4 h-4 rounded border-stone-300 text-amber-500 focus:ring-amber-200" />
+              <span className="flex items-center gap-1.5"><span className="text-sm">⭐</span><span className="text-xs font-medium text-stone-700">Import all as favorites</span></span>
+            </label>
             <div className="flex gap-2.5 pt-1">
               <button onClick={() => setImportDialog(null)}
                 className="flex-1 py-3 rounded-xl font-medium text-sm border border-stone-200 text-stone-600 hover:bg-stone-50 active:bg-stone-100 transition-colors">Cancel</button>
