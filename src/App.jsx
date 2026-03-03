@@ -1597,7 +1597,7 @@ function HomeDetailScreen({ home, onBack, onUpdate, onDelete, compareList, toggl
         transition: 'transform 0.25s ease-out, opacity 0.25s ease-out',
       } : undefined}>
       {/* Header */}
-      <div className="sticky top-0 md:top-16 z-[40] bg-white border-b border-stone-200 px-4 py-3 md:px-6" style={{ isolation: 'isolate' }}>
+      <div className="fixed top-0 md:top-16 left-0 right-0 z-[45] bg-white/95 backdrop-blur-md border-b border-stone-200 px-4 py-3 md:px-6 shadow-sm">
         <div className="flex items-center gap-3 max-w-5xl mx-auto">
           <button onClick={onBack} title="Back to list" className="w-10 h-10 flex items-center justify-center rounded-xl hover:bg-stone-100 active:bg-stone-200 text-stone-500 -ml-2 transition-colors"><BackIcon className="w-5 h-5" /></button>
           <div className="flex-1 min-w-0">
@@ -1642,6 +1642,7 @@ function HomeDetailScreen({ home, onBack, onUpdate, onDelete, compareList, toggl
           </div>
         </div>
       </div>
+      <div className="h-16 md:h-[60px]" /> {/* Spacer for fixed detail header */}
 
       <div className="relative z-0 max-w-5xl mx-auto px-4 md:px-6 py-5 space-y-4">
         {/* ── Price Hero ─────────────────────────────────────────── */}
@@ -3718,7 +3719,7 @@ export default function CribsApp() {
               <svg className="w-5 h-5" viewBox="0 0 24 24" fill="white"><path d="M12 3L2 12h3v8h5v-5h4v5h5v-8h3L12 3z"/></svg>
             </div>
             <h1 className="text-lg font-bold tracking-tight text-stone-800">CRIBS</h1>
-            <span className="text-[10px] text-stone-400 font-medium ml-1 self-end mb-0.5">v1.3.3</span>
+            <span className="text-[10px] text-stone-400 font-medium ml-1 self-end mb-0.5">v1.3.4</span>
           </button>
           <nav className="flex gap-1 bg-stone-100 rounded-lg p-0.5 border border-stone-200">
             <button onClick={goList} className={`px-4 py-2 text-sm font-medium rounded-md transition-colors ${screen === "list" || screen === "detail" ? "bg-white text-sky-600 shadow-sm" : "text-stone-500 hover:text-stone-700"}`}>Homes</button>
@@ -3799,9 +3800,9 @@ export default function CribsApp() {
       <style>{`
         .safe-area-pb { padding-bottom: env(safe-area-inset-bottom, 0); }
         * { -webkit-tap-highlight-color: transparent; touch-action: manipulation; }
-        @keyframes fadeUp { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: none; } }
+        @keyframes fadeUp { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
         @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
-        @keyframes scaleIn { from { opacity: 0; transform: scale(0.95); } to { opacity: 1; transform: none; } }
+        @keyframes scaleIn { from { opacity: 0; transform: scale(0.95); } to { opacity: 1; transform: scale(1); } }
         @keyframes slideInLeft { from { opacity: 0; transform: translateX(-8px); } to { opacity: 1; transform: translateX(0); } }
         @keyframes slideInRight { from { opacity: 0; transform: translateX(8px); } to { opacity: 1; transform: translateX(0); } }
         @keyframes popIn { from { transform: scale(0.8); opacity: 0; } 60% { transform: scale(1.05); } to { transform: scale(1); opacity: 1; } }
