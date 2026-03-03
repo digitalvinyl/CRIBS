@@ -3714,6 +3714,8 @@ function SettingsScreen({ fin, updateFin, liveRate, rateInfo, homes = [], setHom
               localStorage.setItem("cribs_user_data", JSON.stringify(merged));
             } catch {}
             setHomes([]);
+            // Save immediately — don't wait for debounced persist
+            try { localStorage.setItem("cribs_homes", JSON.stringify([])); } catch {}
           }}}
             className="text-xs font-medium text-stone-600 hover:text-stone-800 bg-stone-50 hover:bg-stone-100 px-3 py-1.5 rounded-lg border border-stone-200 transition-colors">Clear All Homes</button>
           {(() => {
@@ -3746,12 +3748,14 @@ export default function CribsApp() {
       const s = localStorage.getItem("cribs_homes");
       if (s) {
         const p = JSON.parse(s);
-        if (Array.isArray(p) && p.length > 0) {
+        if (Array.isArray(p)) {
+          // Empty array = user intentionally cleared homes, respect it
+          if (p.length === 0) return [];
           // Check if data has enrichment (v1.1+ format). If localStorage homes
           // are from a pre-enrichment version, reset to baked-in defaults.
           const hasEnrichment = p.some(h => h.flood && h.crime);
           if (hasEnrichment) {
-            // v1.5.2 migration: clear old school/appraisal data from Anthropic API so it re-fetches from NCES/HCAD
+            // v1.5.5 migration: clear old school/appraisal data from Anthropic API so it re-fetches from NCES/HCAD
             const needsMigration = p.some(h => h.school?.ratingSource === "GreatSchools" || h.school?.nicheGrade || (h.appraisal && !h.appraisal.value) || (h.appraisal && h.appraisal.source !== "HCAD (Harris County Appraisal District)"));
             if (needsMigration) {
               const migrated = p.map(h => ({ ...h, school: null, appraisal: null }));
@@ -3984,10 +3988,10 @@ export default function CribsApp() {
       }
     };
 
-    // Snapshot current homes for iteration. Safety timeout scales with home count.
+    // Only iterate homes that actually need enrichment
     const timeoutMs = Math.max(120000, needsEnrich.length * 15000);
     const safetyTimeout = setTimeout(() => { if (!cancelled) { setEnrichDone(true); enrichingRef.current = false; } }, timeoutMs);
-    enrich([...homes]).then(() => { clearTimeout(safetyTimeout); if (!cancelled) { setEnrichDone(true); enrichingRef.current = false; } });
+    enrich(needsEnrich).then(() => { clearTimeout(safetyTimeout); if (!cancelled) { setEnrichDone(true); enrichingRef.current = false; } });
     return () => { cancelled = true; clearTimeout(safetyTimeout); enrichingRef.current = false; };
   }, [enrichTrigger]);
 
@@ -4128,7 +4132,7 @@ export default function CribsApp() {
               <svg className="w-5 h-5" viewBox="0 0 24 24" fill="white"><path d="M12 3L2 12h3v8h5v-5h4v5h5v-8h3L12 3z"/></svg>
             </div>
             <h1 className="text-lg font-bold tracking-tight text-stone-800">CRIBS</h1>
-            <span className="text-[10px] text-stone-400 font-medium ml-1 self-end mb-0.5">v1.5.2</span>
+            <span className="text-[10px] text-stone-400 font-medium ml-1 self-end mb-0.5">v1.5.5</span>
           </button>
           <nav className="flex gap-1 bg-stone-100 rounded-lg p-0.5 border border-stone-200">
             <button onClick={goList} className={`px-4 py-2 text-sm font-medium rounded-md transition-colors ${screen === "list" || screen === "detail" ? "bg-white text-sky-600 shadow-sm" : "text-stone-500 hover:text-stone-700"}`}>Homes</button>
