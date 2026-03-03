@@ -686,6 +686,93 @@ const StarIcon = ({ filled, ...p }) => (
   </svg>
 );
 
+/* ─── Grocery Map (Leaflet + CartoDB Voyager) ─────────────────────── */
+function GroceryMap({ home, groceries, className = "" }) {
+  const mapRef = useRef(null);
+  const mapInstance = useRef(null);
+
+  useEffect(() => {
+    if (!home?.lat || !home?.lng || !groceries) return;
+
+    // Load Leaflet CSS
+    if (!document.querySelector('link[href*="leaflet"]')) {
+      const link = document.createElement("link");
+      link.rel = "stylesheet";
+      link.href = "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css";
+      document.head.appendChild(link);
+    }
+
+    // Load Leaflet JS then init map
+    const init = (L) => {
+      if (!mapRef.current) return;
+      if (mapInstance.current) { mapInstance.current.remove(); mapInstance.current = null; }
+
+      const map = L.map(mapRef.current, { zoomControl: false, attributionControl: false, scrollWheelZoom: true });
+      L.control.zoom({ position: "topright" }).addTo(map);
+      const tileLayer = L.tileLayer("https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png", { maxZoom: 18, subdomains: "abcd" });
+      tileLayer.on("tileerror", () => {
+        // Fallback to OSM if CartoDB tiles fail
+        if (!map._osfallback) {
+          map._osfallback = true;
+          tileLayer.remove();
+          L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 19 }).addTo(map);
+        }
+      });
+      tileLayer.addTo(map);
+
+      const makeIcon = (emoji, bg, border) => L.divIcon({
+        html: `<div style="width:32px;height:32px;display:flex;align-items:center;justify-content:center;background:${bg};border:2px solid ${border};border-radius:50%;font-size:16px;box-shadow:0 2px 6px rgba(0,0,0,0.2);">${emoji}</div>`,
+        className: "", iconSize: [32, 32], iconAnchor: [16, 16], popupAnchor: [0, -18],
+      });
+
+      const homeIcon = L.divIcon({
+        html: `<div style="width:38px;height:38px;display:flex;align-items:center;justify-content:center;background:linear-gradient(135deg,#8b5cf6,#d946ef);border:3px solid white;border-radius:50%;font-size:18px;box-shadow:0 3px 10px rgba(139,92,246,0.4);">🏠</div>`,
+        className: "", iconSize: [38, 38], iconAnchor: [19, 19], popupAnchor: [0, -22],
+      });
+
+      const bounds = L.latLngBounds([[home.lat, home.lng]]);
+      L.marker([home.lat, home.lng], { icon: homeIcon }).addTo(map).bindPopup(`<strong>${home.address}</strong>`);
+
+      const chains = [
+        { key: "heb", label: "H-E-B", emoji: "🛒", bg: "#fef2f2", border: "#dc2626" },
+        { key: "costco", label: "Costco", emoji: "🏪", bg: "#eff6ff", border: "#2563eb" },
+        { key: "wholefoods", label: "Whole Foods", emoji: "🥬", bg: "#f0fdf4", border: "#15803d" },
+        { key: "traderjoes", label: "Trader Joe's", emoji: "🍊", bg: "#fff7ed", border: "#ea580c" },
+      ];
+
+      chains.forEach(({ key, label, emoji, bg, border }) => {
+        const store = groceries[key];
+        if (!store?.lat || !store?.lng) return;
+        const icon = makeIcon(emoji, bg, border);
+        L.marker([store.lat, store.lng], { icon }).addTo(map)
+          .bindPopup(`<strong>${label}</strong><br/>${store.distanceMi} mi${store.address ? "<br/><span style='color:#888;font-size:11px'>" + store.address + "</span>" : ""}`);
+        bounds.extend([store.lat, store.lng]);
+      });
+
+      map.fitBounds(bounds.pad(0.15));
+      mapInstance.current = map;
+
+      // Fix tile rendering after container resize
+      setTimeout(() => map.invalidateSize(), 100);
+    };
+
+    if (window.L) { init(window.L); return; }
+    const script = document.createElement("script");
+    script.src = "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js";
+    script.onload = () => init(window.L);
+    document.head.appendChild(script);
+
+    return () => { if (mapInstance.current) { mapInstance.current.remove(); mapInstance.current = null; } };
+  }, [home?.lat, home?.lng, groceries]);
+
+  // Re-invalidate on visibility change (mobile toggle)
+  useEffect(() => {
+    if (mapInstance.current) setTimeout(() => mapInstance.current.invalidateSize(), 50);
+  });
+
+  return <div ref={mapRef} className={className} style={{ minHeight: 220, borderRadius: 12, zIndex: 0 }} />;
+}
+
 /* ─── Shared Components ──────────────────────────────────────────── */
 function StarRating({ value, onChange, size = "w-6 h-6" }) {
   const containerRef = useRef(null);
@@ -1452,7 +1539,7 @@ function HomeDetailScreen({ home, onBack, onUpdate, onDelete, compareList, toggl
 
   useEffect(() => { return () => stopVoice(); }, []);
 
-  useEffect(() => { stopVoice(); setNotes(home.notes || ""); setEditingNotes(false); setShowFinancial(false); setVoiceError(null); setSchool(home.school || null); setFlood(home.flood || null); setCrime(home.crime || null); setAppraisal(home.appraisal || null); window.scrollTo(0, 0); }, [home.id]);
+  useEffect(() => { stopVoice(); setNotes(home.notes || ""); setEditingNotes(false); setShowFinancial(false); setVoiceError(null); setSchool(home.school || null); setFlood(home.flood || null); setCrime(home.crime || null); setAppraisal(home.appraisal || null); setGroceryMapOpen(false); window.scrollTo(0, 0); }, [home.id]);
 
   // Appraisal value — fetch once per home, cache on the home object
   const [appraisal, setAppraisal] = useState(home.appraisal || null);
@@ -1498,6 +1585,7 @@ function HomeDetailScreen({ home, onBack, onUpdate, onDelete, compareList, toggl
   }, [home.id, home.lat, home.lng, fin.places]);
   const [groceries, setGroceries] = useState(home.groceries || null);
   const [groceriesLoading, setGroceriesLoading] = useState(false);
+  const [groceryMapOpen, setGroceryMapOpen] = useState(false);
 
   // Sync from props when batch fetch updates the home object
   useEffect(() => { if (home.flood && !flood) setFlood(home.flood); }, [home.flood]);
@@ -2125,13 +2213,13 @@ function HomeDetailScreen({ home, onBack, onUpdate, onDelete, compareList, toggl
             <div className="flex items-center gap-2 mb-3">
               <svg className="w-4 h-4 text-orange-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M3 3h2l.4 2M7 13h10l4-8H5.4M7 13L5.4 5M7 13l-2.293 2.293c-.63.63-.184 1.707.707 1.707H17m0 0a2 2 0 100 4 2 2 0 000-4zm-8 2a2 2 0 100 4 2 2 0 000-4z" /></svg>
               <h3 className="text-sm font-semibold text-stone-700">Nearest Groceries</h3>
-              {groceries && (() => {
-                const stores = [groceries.heb, groceries.costco, groceries.wholefoods, groceries.traderjoes].filter(Boolean);
-                if (stores.length === 0) return null;
-                const pins = stores.map(s => `${s.lat},${s.lng}`).join("/");
-                const mapUrl = `https://www.google.com/maps/dir/${home.lat},${home.lng}/${pins}`;
-                return <a href={mapUrl} target="_blank" rel="noreferrer" title="View stores on Google Maps" className="ml-auto text-xs font-medium text-orange-500 hover:text-orange-600 flex items-center gap-1 transition-colors"><svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" /><path strokeLinecap="round" strokeLinejoin="round" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" /></svg>Map</a>;
-              })()}
+              {groceries && (
+                <button onClick={() => setGroceryMapOpen(v => !v)}
+                  className="md:hidden ml-auto text-xs font-medium text-orange-500 hover:text-orange-600 flex items-center gap-1 transition-colors">
+                  <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" /><path strokeLinecap="round" strokeLinejoin="round" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
+                  {groceryMapOpen ? "Hide Map" : "Map"}
+                </button>
+              )}
             </div>
 
             {groceriesLoading && <div className="text-sm text-stone-400 animate-pulse py-4">Finding grocery stores...</div>}
@@ -2144,26 +2232,30 @@ function HomeDetailScreen({ home, onBack, onUpdate, onDelete, compareList, toggl
                 { key: "traderjoes", label: "Trader Joe's", emoji: "🍊", color: "text-orange-600", bg: "bg-orange-50" },
               ];
               return (
-                <div className="grid grid-cols-2 gap-2">
-                  {stores.map((s) => {
-                    const store = groceries[s.key];
-                    return (
-                      <div key={s.key} className={`rounded-xl p-3 border ${store ? s.bg + " border-stone-100" : "bg-stone-50/50 border-stone-100"}`}>
-                        <div className="flex items-center gap-2 mb-1">
-                          <span className="text-base">{s.emoji}</span>
-                          <span className={`text-xs font-bold ${store ? s.color : "text-stone-400"}`}>{s.label}</span>
+                <div className="flex flex-col md:flex-row gap-3">
+                  {/* Store list — compact on desktop */}
+                  <div className="md:w-2/5 flex flex-col gap-1.5">
+                    {stores.map((s) => {
+                      const store = groceries[s.key];
+                      return (
+                        <div key={s.key} className={`rounded-lg px-3 py-2 border flex items-center gap-2.5 ${store ? s.bg + " border-stone-100" : "bg-stone-50/50 border-stone-100"}`}>
+                          <span className="text-base flex-shrink-0">{s.emoji}</span>
+                          <span className={`text-xs font-bold flex-shrink-0 ${store ? s.color : "text-stone-400"}`}>{s.label}</span>
+                          {store ? (
+                            <div className="ml-auto text-right flex-shrink-0">
+                              <span className={`text-sm font-bold tabular-nums ${s.color}`}>{store.distanceMi} <span className="text-[10px] text-stone-400 font-normal">mi</span></span>
+                            </div>
+                          ) : (
+                            <span className="ml-auto text-[10px] text-stone-400">—</span>
+                          )}
                         </div>
-                        {store ? (
-                          <div>
-                            <div className={`text-lg font-bold tabular-nums ${s.color}`}>{store.distanceMi}<span className="text-xs text-stone-400 font-normal"> mi</span></div>
-                            {store.address && <div className="text-[10px] text-stone-400 truncate mt-0.5">{store.address}</div>}
-                          </div>
-                        ) : (
-                          <div className="text-xs text-stone-400 mt-1">None within 10 mi</div>
-                        )}
-                      </div>
-                    );
-                  })}
+                      );
+                    })}
+                  </div>
+                  {/* Map — always visible desktop, toggle mobile */}
+                  <div className={`md:w-3/5 md:block ${groceryMapOpen ? "block" : "hidden"}`}>
+                    <GroceryMap home={home} groceries={groceries} className="w-full h-full min-h-[220px] md:min-h-[260px] rounded-xl border border-stone-200 overflow-hidden" />
+                  </div>
                 </div>
               );
             })()}
@@ -3719,7 +3811,7 @@ export default function CribsApp() {
               <svg className="w-5 h-5" viewBox="0 0 24 24" fill="white"><path d="M12 3L2 12h3v8h5v-5h4v5h5v-8h3L12 3z"/></svg>
             </div>
             <h1 className="text-lg font-bold tracking-tight text-stone-800">CRIBS</h1>
-            <span className="text-[10px] text-stone-400 font-medium ml-1 self-end mb-0.5">v1.3.4</span>
+            <span className="text-[10px] text-stone-400 font-medium ml-1 self-end mb-0.5">v1.3.6</span>
           </button>
           <nav className="flex gap-1 bg-stone-100 rounded-lg p-0.5 border border-stone-200">
             <button onClick={goList} className={`px-4 py-2 text-sm font-medium rounded-md transition-colors ${screen === "list" || screen === "detail" ? "bg-white text-sky-600 shadow-sm" : "text-stone-500 hover:text-stone-700"}`}>Homes</button>
