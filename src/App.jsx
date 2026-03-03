@@ -941,7 +941,7 @@ function DropZone({ onImport, compact }) {
 /* ═══════════════════════════════════════════════════════════════════
    SCREEN: Home List
    ═══════════════════════════════════════════════════════════════════ */
-function HomeListScreen({ homes, setHomes, onOpenHome, compareList, toggleCompare, onImport, fin, rateInfo, schoolFilter, setSchoolFilter, maxBudget, enrichDone }) {
+function HomeListScreen({ homes, setHomes, onOpenHome, compareList, toggleCompare, onImport, fin, rateInfo, schoolFilter, setSchoolFilter, maxBudget, enrichDone, enrichProgress }) {
   const [filter, setFilter] = useState("");
   const [viewedFilter, setViewedFilter] = useState("all");
   const [sortKey, setSortKey] = useState("price");
@@ -999,7 +999,7 @@ function HomeListScreen({ homes, setHomes, onOpenHome, compareList, toggleCompar
 
   const stats = useMemo(() => {
     const prices = filtered.map((h) => h.price).filter(Boolean);
-    const enriched = filtered.filter((h) => h.flood && h.crime && h.school).length;
+    const enriched = filtered.filter((h) => h.flood && h.crime && h.school && h.parks && h.groceries && h.appraisal).length;
     const inBudget = maxBudget ? filtered.filter((h) => h.price && h.price <= maxBudget.maxPrice).length : null;
     return {
       count: filtered.length, viewed: filtered.filter((h) => h.viewed).length,
@@ -1049,7 +1049,7 @@ function HomeListScreen({ homes, setHomes, onOpenHome, compareList, toggleCompar
           ...(stats.inBudget != null ? [{ label: "In Budget", value: `${stats.inBudget}/${stats.count}`, color: stats.inBudget > 0 ? "text-emerald-600" : "text-orange-600" }] : []),
           { label: "Avg Price", value: fmt(stats.avg), color: "text-stone-800" },
           { label: "30yr Rate", value: rateInfo.loading ? "..." : `${fin.rate}%`, color: rateInfo.loading ? "text-stone-400" : "text-sky-600", sub: rateInfo.loading ? "Fetching" : rateInfo.source === "default" ? "Default" : "Live" },
-          ...(stats.enriched < stats.count && !enrichDone ? [{ label: "Data", value: `${stats.enriched}/${stats.count}`, color: "text-violet-600", sub: "Enriching" }] : []),
+          ...(enrichProgress.total > 0 && !enrichDone ? [{ label: "Data", value: `${enrichProgress.done}/${enrichProgress.total}`, color: "text-violet-600", sub: "Enriching" }] : []),
         ].map((s, i) => (
           <div key={s.label} style={{ animationDelay: `${i * 60}ms` }} className="anim-fade-up bg-white border border-stone-200 rounded-xl px-3.5 py-2.5 shadow-sm flex-shrink-0">
             <div className="text-[10px] text-stone-400 uppercase tracking-wider font-semibold">{s.label}</div>
@@ -3751,7 +3751,7 @@ export default function CribsApp() {
           // are from a pre-enrichment version, reset to baked-in defaults.
           const hasEnrichment = p.some(h => h.flood && h.crime);
           if (hasEnrichment) {
-            // v1.5.0 migration: clear old school/appraisal data from Anthropic API so it re-fetches from NCES/HCAD
+            // v1.5.2 migration: clear old school/appraisal data from Anthropic API so it re-fetches from NCES/HCAD
             const needsMigration = p.some(h => h.school?.ratingSource === "GreatSchools" || h.school?.nicheGrade || (h.appraisal && !h.appraisal.value) || (h.appraisal && h.appraisal.source !== "HCAD (Harris County Appraisal District)"));
             if (needsMigration) {
               const migrated = p.map(h => ({ ...h, school: null, appraisal: null }));
@@ -3820,6 +3820,34 @@ export default function CribsApp() {
     { id: "r052", address: "Custom Design 15218 Plan", city: "Houston", state: "TX", zip: "77043", lat: 29.820502, lng: -95.5643644, price: 1000000, beds: 5, baths: 6.0, sqft: 5580, lotSize: null, yearBuilt: null, dom: 836, ppsf: 179, hoa: 0, propertyType: "Single Family Residential", status: "Active", url: "https://www.redfin.com/TX/Houston/Houston/Custom-Design-15218/home/188417430", viewed: false, favorite: false, notes: "", ratings: emptyRatings(), pool: null, taxRate: 2.11, taxJurisdictions: [{ entity: "Harris County", rate: 0.3491 }, { entity: "HC Flood Control", rate: 0.0281 }, { entity: "Port of Houston", rate: 0.0106 }, { entity: "HC Hospital District", rate: 0.1439 }, { entity: "HC Dept of Education", rate: 0.0049 }, { entity: "City of Houston", rate: 0.5189 }, { entity: "Spring Branch ISD", rate: 1.0572 }], appraisal: { value: 929000, year: 2025, source: "HCAD" }, flood: { zone: "X", zoneDesc: "Minimal Flood Hazard", risk: "low", panel: "48201C0415M", notes: null }, crime: { risk: "low", grade: "B+", violentPerK: 2.1, propertyPerK: 14.8, nationalAvgViolent: 4.0, nationalAvgProperty: 19.6, topConcerns: ["Package theft", "Vehicle break-ins"], source: "NeighborhoodScout", notes: "Memorial-adjacent area. Lower crime than Spring Branch core. Benefits from Memorial Villages patrol spillover." },  },
   ];
   });
+
+  // Set favicon to match app icon
+  useEffect(() => {
+    const canvas = document.createElement("canvas");
+    canvas.width = 64; canvas.height = 64;
+    const ctx = canvas.getContext("2d");
+    // Rounded rect with gradient matching from-violet-500 via-fuchsia-500 to-pink-500
+    const r = 14;
+    ctx.beginPath();
+    ctx.moveTo(r, 0); ctx.lineTo(64 - r, 0); ctx.quadraticCurveTo(64, 0, 64, r);
+    ctx.lineTo(64, 64 - r); ctx.quadraticCurveTo(64, 64, 64 - r, 64);
+    ctx.lineTo(r, 64); ctx.quadraticCurveTo(0, 64, 0, 64 - r);
+    ctx.lineTo(0, r); ctx.quadraticCurveTo(0, 0, r, 0); ctx.closePath();
+    const grad = ctx.createLinearGradient(0, 0, 64, 64);
+    grad.addColorStop(0, "#8b5cf6"); grad.addColorStop(0.5, "#d946ef"); grad.addColorStop(1, "#ec4899");
+    ctx.fillStyle = grad; ctx.fill();
+    // White house icon
+    ctx.fillStyle = "white"; ctx.beginPath();
+    ctx.moveTo(32, 12); ctx.lineTo(10, 30); ctx.lineTo(16, 30); ctx.lineTo(16, 48);
+    ctx.lineTo(27, 48); ctx.lineTo(27, 37); ctx.lineTo(37, 37); ctx.lineTo(37, 48);
+    ctx.lineTo(48, 48); ctx.lineTo(48, 30); ctx.lineTo(54, 30); ctx.closePath(); ctx.fill();
+    // Set as favicon
+    let link = document.querySelector("link[rel~='icon']");
+    if (!link) { link = document.createElement("link"); link.rel = "icon"; document.head.appendChild(link); }
+    link.href = canvas.toDataURL("image/png");
+    // Also set page title
+    document.title = "CRIBS";
+  }, []);
 
   // Persist homes to localStorage (debounced 1s)
   const homesTimerRef = useRef(null);
@@ -3892,13 +3920,16 @@ export default function CribsApp() {
   const enrichingRef = useRef(false);
   const [enrichDone, setEnrichDone] = useState(false);
   const [enrichTrigger, setEnrichTrigger] = useState(0);
+  const [enrichProgress, setEnrichProgress] = useState({ done: 0, total: 0 });
   useEffect(() => {
     if (enrichingRef.current) return;
     // Skip if all homes already have data
     const needsEnrich = homes.filter(h => !h.flood || !h.crime || !h.school || !h.parks || !h.groceries || !h.appraisal);
     if (needsEnrich.length === 0) { setEnrichDone(true); return; }
     enrichingRef.current = true;
+    setEnrichProgress({ done: 0, total: needsEnrich.length });
     let cancelled = false;
+    let doneCount = 0;
 
     const enrich = async (homesList) => {
       for (let i = 0; i < homesList.length; i++) {
@@ -3913,7 +3944,7 @@ export default function CribsApp() {
         if (!h.parks) needs.push("parks");
         if (!h.groceries) needs.push("groceries");
         if (!h.appraisal) needs.push("appraisal");
-        if (needs.length === 0) continue;
+        if (needs.length === 0) { doneCount++; if (!cancelled) setEnrichProgress(p => ({ ...p, done: doneCount })); continue; }
 
         try {
           const promises = [];
@@ -3943,6 +3974,9 @@ export default function CribsApp() {
           // Skip this home on error, continue to next
         }
 
+        doneCount++;
+        if (!cancelled) setEnrichProgress(p => ({ ...p, done: doneCount }));
+
         // Delay between homes to avoid rate limiting
         if (!cancelled && i < homesList.length - 1) {
           await new Promise(r => setTimeout(r, 1200));
@@ -3950,9 +3984,9 @@ export default function CribsApp() {
       }
     };
 
-    // Snapshot current homes for iteration. Also set a safety timeout
-    // in case API is unreachable (no key on Vercel).
-    const safetyTimeout = setTimeout(() => { if (!cancelled) { setEnrichDone(true); enrichingRef.current = false; } }, 60000);
+    // Snapshot current homes for iteration. Safety timeout scales with home count.
+    const timeoutMs = Math.max(120000, needsEnrich.length * 15000);
+    const safetyTimeout = setTimeout(() => { if (!cancelled) { setEnrichDone(true); enrichingRef.current = false; } }, timeoutMs);
     enrich([...homes]).then(() => { clearTimeout(safetyTimeout); if (!cancelled) { setEnrichDone(true); enrichingRef.current = false; } });
     return () => { cancelled = true; clearTimeout(safetyTimeout); enrichingRef.current = false; };
   }, [enrichTrigger]);
@@ -4031,6 +4065,7 @@ export default function CribsApp() {
     // Trigger enrichment for newly imported homes
     enrichingRef.current = false;
     setEnrichDone(false);
+    setEnrichProgress({ done: 0, total: 0 });
     setEnrichTrigger(t => t + 1);
   };
 
@@ -4093,7 +4128,7 @@ export default function CribsApp() {
               <svg className="w-5 h-5" viewBox="0 0 24 24" fill="white"><path d="M12 3L2 12h3v8h5v-5h4v5h5v-8h3L12 3z"/></svg>
             </div>
             <h1 className="text-lg font-bold tracking-tight text-stone-800">CRIBS</h1>
-            <span className="text-[10px] text-stone-400 font-medium ml-1 self-end mb-0.5">v1.5.0</span>
+            <span className="text-[10px] text-stone-400 font-medium ml-1 self-end mb-0.5">v1.5.2</span>
           </button>
           <nav className="flex gap-1 bg-stone-100 rounded-lg p-0.5 border border-stone-200">
             <button onClick={goList} className={`px-4 py-2 text-sm font-medium rounded-md transition-colors ${screen === "list" || screen === "detail" ? "bg-white text-sky-600 shadow-sm" : "text-stone-500 hover:text-stone-700"}`}>Homes</button>
@@ -4107,10 +4142,10 @@ export default function CribsApp() {
       <div className="hidden md:block h-16" /> {/* Spacer for fixed header */}
 
       <div className="max-w-[1600px] mx-auto">
-        {screen === "list" && <HomeListScreen homes={homes} setHomes={setHomes} onOpenHome={openHome} compareList={compareList} toggleCompare={toggleCompare} onImport={handleImport} fin={fin} rateInfo={rateInfo} schoolFilter={schoolFilter} setSchoolFilter={setSchoolFilter} maxBudget={maxBudget} enrichDone={enrichDone} />}
+        {screen === "list" && <HomeListScreen homes={homes} setHomes={setHomes} onOpenHome={openHome} compareList={compareList} toggleCompare={toggleCompare} onImport={handleImport} fin={fin} rateInfo={rateInfo} schoolFilter={schoolFilter} setSchoolFilter={setSchoolFilter} maxBudget={maxBudget} enrichDone={enrichDone} enrichProgress={enrichProgress} />}
         {screen === "detail" && activeHome && <ErrorBoundary><HomeDetailScreen home={activeHome} onBack={goList} onUpdate={updateHome} onDelete={(id) => { const found = homes.find(x => x.id === id); if (found) trackDeletion(found.address); setHomes((p) => p.filter((x) => x.id !== id)); }} compareList={compareList} toggleCompare={toggleCompare} fin={fin} navList={navList} onNavigate={navigateHome} allHomes={homes} soldComps={soldComps} onFilterBySchool={(name) => { setSchoolFilter(name); setScreen("list"); }} maxBudget={maxBudget} /></ErrorBoundary>}
         {screen === "compare" && <CompareScreen homes={homes} compareList={compareList} toggleCompare={toggleCompare} clearCompare={() => setCompareList([])} onOpenHome={openHome} fin={fin} />}
-        {screen === "settings" && <SettingsScreen fin={fin} updateFin={updateFin} liveRate={liveRate} rateInfo={rateInfo} homes={homes} setHomes={setHomes} soldComps={soldComps} setSoldComps={setSoldComps} darkMode={darkMode} setDarkMode={setDarkMode} onTriggerEnrich={() => { enrichingRef.current = false; setEnrichDone(false); setEnrichTrigger(t => t + 1); }} enrichDone={enrichDone} />}
+        {screen === "settings" && <SettingsScreen fin={fin} updateFin={updateFin} liveRate={liveRate} rateInfo={rateInfo} homes={homes} setHomes={setHomes} soldComps={soldComps} setSoldComps={setSoldComps} darkMode={darkMode} setDarkMode={setDarkMode} onTriggerEnrich={() => { enrichingRef.current = false; setEnrichDone(false); setEnrichProgress({ done: 0, total: 0 }); setEnrichTrigger(t => t + 1); }} enrichDone={enrichDone} />}
       </div>
 
       {/* Import Dialog */}
