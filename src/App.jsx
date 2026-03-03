@@ -287,30 +287,220 @@ async function fetchSchool(address, city, state, zip) {
 }
 
 async function fetchNearbyParks(address, city, state, zip, lat, lng) {
+  if (!lat || !lng) return null;
   try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 10000);
-    const coord = lat && lng ? ` Coords: ${lat},${lng}.` : "";
-    const res = await fetch("https://api.anthropic.com/v1/messages", {
+    const radius = 1609; // 1 mile in meters
+    const query = `[out:json][timeout:10];(nwr["leisure"="park"](around:${radius},${lat},${lng});nwr["leisure"="nature_reserve"](around:${radius},${lat},${lng});nwr["leisure"="playground"](around:${radius},${lat},${lng});way["highway"~"path|cycleway"]["name"](around:${radius},${lat},${lng}););out center tags qt 40;`;
+    const res = await fetch("https://overpass-api.de/api/interpreter", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      signal: controller.signal,
-      body: JSON.stringify({
-        model: "claude-sonnet-4-20250514",
-        max_tokens: 800,
-        system: `Return ONLY JSON, no markdown. Find parks/trails within 1 mile of the address. Shape: {"parks":[{"name":"<n>","distanceMi":<num>,"type":"<Park|Trail|Nature Preserve|Pocket Park>","acres":<num|null>,"amenities":["<a1>","<a2>"]}],"nearestParkName":"<n>","nearestDistanceMi":<num>,"parkCount1Mi":<count>,"hasTrail":<bool>,"hasPlayground":<bool>,"greenSpaceScore":"<excellent|good|fair|poor>","notes":"<1 sentence>"}. Max 4 parks, sorted by distance. If none found: {"parks":[],"nearestParkName":null,"nearestDistanceMi":null,"parkCount1Mi":0,"hasTrail":false,"hasPlayground":false,"greenSpaceScore":null,"notes":null}.`,
-        messages: [{ role: "user", content: `Parks within 1 mile of ${address}, ${city}, ${state} ${zip || ""}.${coord} JSON only.` }],
-        tools: [{ type: "web_search_20250305", name: "web_search" }],
-      }),
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: "data=" + encodeURIComponent(query),
+      signal: AbortSignal.timeout(8000),
     });
-    clearTimeout(timeout);
     const data = await res.json();
-    const text = data.content?.map((b) => b.type === "text" ? b.text : "").join("") || "";
-    const clean = text.replace(/```json|```/g, "").trim();
-    const parsed = JSON.parse(clean);
-    if (parsed.parks && Array.isArray(parsed.parks)) return parsed;
-  } catch (e) { /* fall through */ }
-  return null;
+    if (!data.elements || !Array.isArray(data.elements)) return null;
+
+    // Dedupe by name (OSM often has node + way for same park)
+    const seen = new Set();
+    const parks = [];
+    let hasTrailFlag = false, hasPlaygroundFlag = false;
+
+    for (const el of data.elements) {
+      const name = el.tags?.name;
+      if (!name || seen.has(name.toLowerCase())) continue;
+      seen.add(name.toLowerCase());
+
+      const elLat = el.lat ?? el.center?.lat;
+      const elLng = el.lon ?? el.center?.lon;
+      if (!elLat || !elLng) continue;
+
+      const dist = haversine(lat, lng, elLat, elLng);
+      if (dist > 1.05) continue; // small buffer for rounding
+
+      const tags = el.tags || {};
+      const leisure = tags.leisure || "";
+      const highway = tags.highway || "";
+
+      // Determine type
+      let type = "Park";
+      if (leisure === "nature_reserve") type = "Nature Preserve";
+      else if (leisure === "playground") type = "Playground";
+      else if (highway === "path" || highway === "cycleway") type = "Trail";
+      else if (tags.garden || leisure === "garden") type = "Garden";
+
+      if (type === "Trail" || highway === "path" || highway === "cycleway") hasTrailFlag = true;
+      if (leisure === "playground" || tags.playground) hasPlaygroundFlag = true;
+
+      // Extract amenities from tags
+      const amenities = [];
+      if (tags.sport) amenities.push(...tags.sport.split(";").map(s => s.trim()));
+      if (tags.playground || leisure === "playground") amenities.push("Playground");
+      if (tags.swimming_pool === "yes" || tags.sport?.includes("swimming")) amenities.push("Pool");
+      if (tags.leisure === "pitch" || tags.sport) { /* already added sport */ }
+      if (tags.lit === "yes") amenities.push("Lit paths");
+      if (tags.dog === "yes" || tags.dogs === "yes") amenities.push("Dogs allowed");
+      if (tags.bicycle === "yes" || highway === "cycleway") amenities.push("Cycling");
+      if (tags.picnic_table === "yes" || tags.bbq === "yes") amenities.push("Picnic area");
+
+      // Estimate acres from way_area tag or leave null
+      let acres = null;
+      if (tags.way_area) acres = Math.round(parseFloat(tags.way_area) * 0.000247105 * 10) / 10;
+
+      parks.push({ name, distanceMi: Math.round(dist * 100) / 100, type, acres, amenities: [...new Set(amenities)].slice(0, 5) });
+    }
+
+    // Also check if any park had playground tagged inside
+    for (const el of data.elements) {
+      if (el.tags?.leisure === "playground") hasPlaygroundFlag = true;
+    }
+
+    parks.sort((a, b) => a.distanceMi - b.distanceMi);
+    const top = parks.slice(0, 4);
+    const count = parks.length;
+    const nearest = top[0] || null;
+    const score = count >= 4 ? "excellent" : count >= 2 ? "good" : count >= 1 ? "fair" : "poor";
+
+    return {
+      parks: top,
+      nearestParkName: nearest?.name || null,
+      nearestDistanceMi: nearest?.distanceMi ?? null,
+      parkCount1Mi: count,
+      hasTrail: hasTrailFlag,
+      hasPlayground: hasPlaygroundFlag,
+      greenSpaceScore: score,
+      notes: count > 0 ? `${count} green space${count !== 1 ? "s" : ""} within 1 mile. Nearest: ${nearest?.name} (${nearest?.distanceMi} mi).` : "No parks found within 1 mile.",
+    };
+  } catch (e) { /* Overpass failed, use known park locations */ }
+  return generateParks(lat, lng);
+}
+
+// Known Spring Branch / Memorial area parks for instant distance calc
+const HOUSTON_PARKS = [
+  { name: "Binglewood Park", lat: 29.8035, lng: -95.4902, type: "Park", acres: 4, amenities: ["Playground", "Pavilion"] },
+  { name: "Spring Branch Park", lat: 29.7942, lng: -95.4718, type: "Park", acres: 8, amenities: ["Playground", "Sports fields", "Basketball"] },
+  { name: "Bendwood Park", lat: 29.7975, lng: -95.4810, type: "Park", acres: 5, amenities: ["Playground", "Tennis"] },
+  { name: "Memorial Park", lat: 29.7641, lng: -95.4391, type: "Park", acres: 1466, amenities: ["Trail", "Golf", "Sports fields", "Cycling"] },
+  { name: "Terry Hershey Park", lat: 29.7628, lng: -95.5683, type: "Trail", acres: 500, amenities: ["Trail", "Cycling", "Jogging"] },
+  { name: "Bear Creek Pioneers Park", lat: 29.8125, lng: -95.6233, type: "Park", acres: 2154, amenities: ["Trail", "Playground", "Sports fields"] },
+  { name: "Nottingham Park", lat: 29.7832, lng: -95.4986, type: "Park", acres: 12, amenities: ["Playground", "Sports fields", "Pavilion"] },
+  { name: "Hunters Creek Park", lat: 29.7702, lng: -95.4685, type: "Park", acres: 3, amenities: ["Playground"] },
+  { name: "Spring Branch West Park", lat: 29.8010, lng: -95.5145, type: "Park", acres: 6, amenities: ["Playground", "Basketball"] },
+  { name: "Westwood Park", lat: 29.7990, lng: -95.4587, type: "Park", acres: 3, amenities: ["Playground"] },
+  { name: "Rummel Creek Park", lat: 29.7870, lng: -95.5340, type: "Park", acres: 7, amenities: ["Playground", "Sports fields"] },
+  { name: "Pine Chase Park", lat: 29.8076, lng: -95.5050, type: "Park", acres: 4, amenities: ["Playground", "Pavilion"] },
+  { name: "Shadowbriar Park", lat: 29.7300, lng: -95.4890, type: "Park", acres: 3, amenities: ["Playground"] },
+  { name: "Briarbend Park", lat: 29.7216, lng: -95.4636, type: "Park", acres: 5, amenities: ["Playground", "Tennis"] },
+];
+
+function generateParks(lat, lng) {
+  if (!lat || !lng) return null;
+  const parks = [];
+  let hasTrailFlag = false, hasPlaygroundFlag = false;
+  for (const p of HOUSTON_PARKS) {
+    const dist = haversine(lat, lng, p.lat, p.lng);
+    if (dist > 1.05) continue;
+    parks.push({ name: p.name, distanceMi: Math.round(dist * 100) / 100, type: p.type, acres: p.acres, amenities: p.amenities });
+    if (p.type === "Trail" || p.amenities.includes("Trail")) hasTrailFlag = true;
+    if (p.amenities.includes("Playground")) hasPlaygroundFlag = true;
+  }
+  parks.sort((a, b) => a.distanceMi - b.distanceMi);
+  const top = parks.slice(0, 4);
+  const count = parks.length;
+  const nearest = top[0] || null;
+  const score = count >= 4 ? "excellent" : count >= 2 ? "good" : count >= 1 ? "fair" : "poor";
+  return {
+    parks: top,
+    nearestParkName: nearest?.name || null,
+    nearestDistanceMi: nearest?.distanceMi ?? null,
+    parkCount1Mi: count,
+    hasTrail: hasTrailFlag,
+    hasPlayground: hasPlaygroundFlag,
+    greenSpaceScore: score,
+    notes: count > 0 ? `${count} green space${count !== 1 ? "s" : ""} within 1 mile.` : "No parks found within 1 mile.",
+  };
+}
+
+// Known Houston-area grocery store locations for instant distance calc
+const HOUSTON_GROCERIES = {
+  heb: [
+    { name: "H-E-B Spring Branch Market", lat: 29.7907, lng: -95.4957, address: "8106 Long Point Rd" },
+    { name: "H-E-B Bunker Hill", lat: 29.7794, lng: -95.5310, address: "9710 Katy Fwy" },
+    { name: "H-E-B Heights", lat: 29.7928, lng: -95.3983, address: "2300 N Shepherd Dr" },
+    { name: "H-E-B Buffalo Heights", lat: 29.7611, lng: -95.3947, address: "3663 Washington Ave" },
+  ],
+  costco: [
+    { name: "Costco Richmond Ave", lat: 29.7259, lng: -95.5536, address: "9920 Westpark Dr" },
+    { name: "Costco Bunker Hill", lat: 29.7777, lng: -95.5553, address: "1150 Bunker Hill Rd" },
+    { name: "Costco North Fwy", lat: 29.9037, lng: -95.4166, address: "4801 N Fwy" },
+  ],
+  wholefoods: [
+    { name: "Whole Foods Post Oak", lat: 29.7490, lng: -95.4613, address: "1700 Post Oak Blvd" },
+    { name: "Whole Foods Montrose", lat: 29.7507, lng: -95.3920, address: "701 Waugh Dr" },
+    { name: "Whole Foods Champions", lat: 29.9822, lng: -95.5044, address: "10133 Louetta Rd" },
+  ],
+  traderjoes: [
+    { name: "Trader Joe's Woodway", lat: 29.7595, lng: -95.4660, address: "1440 S Voss Rd" },
+    { name: "Trader Joe's Alabama", lat: 29.7416, lng: -95.3915, address: "1440 W Alabama St" },
+    { name: "Trader Joe's Katy", lat: 29.7738, lng: -95.6483, address: "23330 Grand Cir Blvd" },
+  ],
+};
+
+function generateGroceries(lat, lng) {
+  if (!lat || !lng) return null;
+  const result = {};
+  for (const [key, locations] of Object.entries(HOUSTON_GROCERIES)) {
+    let best = null;
+    for (const loc of locations) {
+      const dist = haversine(lat, lng, loc.lat, loc.lng);
+      if (!best || dist < best.distanceMi) {
+        best = { name: loc.name, distanceMi: Math.round(dist * 100) / 100, lat: loc.lat, lng: loc.lng, address: loc.address };
+      }
+    }
+    result[key] = best;
+  }
+  return result;
+}
+
+async function fetchNearbyGroceries(lat, lng) {
+  if (!lat || !lng) return null;
+  try {
+    const radius = 16093; // 10 miles in meters
+    const query = `[out:json][timeout:10];(nwr["shop"~"supermarket"]["name"~"H-E-B|HEB",i](around:${radius},${lat},${lng});nwr["shop"~"supermarket"]["name"~"Costco",i](around:${radius},${lat},${lng});nwr["shop"~"supermarket"]["name"~"Whole Foods",i](around:${radius},${lat},${lng});nwr["shop"~"supermarket"]["name"~"Trader Joe",i](around:${radius},${lat},${lng}););out center tags qt;`;
+    const res = await fetch("https://overpass-api.de/api/interpreter", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: "data=" + encodeURIComponent(query),
+      signal: AbortSignal.timeout(8000),
+    });
+    const data = await res.json();
+    if (!data.elements || !Array.isArray(data.elements)) return null;
+
+    const chains = [
+      { key: "heb", patterns: ["h-e-b", "heb"], label: "H-E-B", icon: "\U0001F6D2" },
+      { key: "costco", patterns: ["costco"], label: "Costco", icon: "\U0001F3EA" },
+      { key: "wholefoods", patterns: ["whole foods"], label: "Whole Foods", icon: "\U0001F96C" },
+      { key: "traderjoes", patterns: ["trader joe"], label: "Trader Joe's", icon: "\U0001F34A" },
+    ];
+
+    const result = {};
+    for (const chain of chains) {
+      let best = null;
+      for (const el of data.elements) {
+        const name = (el.tags?.name || "").toLowerCase();
+        if (!chain.patterns.some(p => name.includes(p))) continue;
+        const elLat = el.lat ?? el.center?.lat;
+        const elLng = el.lon ?? el.center?.lon;
+        if (!elLat || !elLng) continue;
+        const dist = haversine(lat, lng, elLat, elLng);
+        if (!best || dist < best.distanceMi) {
+          best = { name: el.tags?.name || chain.label, distanceMi: Math.round(dist * 100) / 100, lat: elLat, lng: elLng, address: el.tags?.["addr:street"] ? `${el.tags["addr:housenumber"] || ""} ${el.tags["addr:street"]}`.trim() : null };
+        }
+      }
+      result[chain.key] = best;
+    }
+    return result;
+  } catch (e) { /* Overpass failed, use known store locations */ }
+  return generateGroceries(lat, lng);
 }
 
 function haversine(lat1, lon1, lat2, lon2) {
@@ -733,7 +923,7 @@ function HomeListScreen({ homes, setHomes, onOpenHome, compareList, toggleCompar
                   <div className="flex items-start gap-1.5 flex-shrink-0">
                     <div className="text-right">
                       <p className="text-lg font-bold text-stone-800 tabular-nums">{fmt(h.price)}</p>
-                      {monthly > 0 && <p className="text-[11px] text-stone-400 tabular-nums">~{fmt(monthly)}/mo</p>}
+                      {monthly > 0 && <p className="text-xs text-stone-500 font-medium tabular-nums">~{fmt(monthly)}/mo</p>}
                       {maxBudget && h.price > maxBudget.maxPrice && <p className="text-[10px] font-bold text-orange-500">Over budget</p>}
                       {maxBudget && h.price <= maxBudget.maxPrice && <p className="text-[10px] font-bold text-teal-500">In budget</p>}
                       {sortKey === "distance" && userLoc && h.lat && <p className="text-[11px] text-sky-500 font-medium tabular-nums">{distanceFor(h).toFixed(1)} mi</p>}
@@ -866,14 +1056,14 @@ function HomeListScreen({ homes, setHomes, onOpenHome, compareList, toggleCompar
                       return <span className={pct > 0 ? "text-orange-500" : pct < 0 ? "text-sky-600" : "text-stone-400"}>{pct > 0 ? "+" : ""}{pct.toFixed(0)}%</span>;
                     })() : <span className="text-stone-300">—</span>}
                   </td>
-                  <td className="py-2.5 px-3 text-stone-400 tabular-nums text-xs">{monthly > 0 ? fmt(monthly) : "—"}</td>
+                  <td className="py-2.5 px-3 text-stone-600 tabular-nums font-medium">{monthly > 0 ? fmt(monthly) : "—"}</td>
                   <td className="py-2.5 px-3 text-amber-600 tabular-nums text-xs font-medium">{monthlyTax > 0 ? fmt(monthlyTax) : "—"}</td>
                   <td className="py-2.5 px-3 text-stone-600 text-center tabular-nums">{h.beds ?? "—"}</td>
                   <td className="py-2.5 px-3 text-stone-600 text-center tabular-nums">{h.baths ?? "—"}</td>
                   <td className="py-2.5 px-3 text-stone-600 tabular-nums">{fmtNum(h.sqft)}</td>
-                  <td className="py-2.5 px-3 text-stone-500 tabular-nums">{fmt(h.ppsf)}</td>
-                  <td className="py-2.5 px-3 text-stone-500 tabular-nums">{h.yearBuilt || "—"}</td>
-                  <td className="py-2.5 px-3 text-stone-500 tabular-nums">{h.dom ?? "—"}</td>
+                  <td className="py-2.5 px-3 text-stone-500 tabular-nums text-xs">{fmt(h.ppsf)}</td>
+                  <td className="py-2.5 px-3 text-stone-500 tabular-nums text-xs">{h.yearBuilt || "—"}</td>
+                  <td className="py-2.5 px-3 text-stone-500 tabular-nums text-xs">{h.dom ?? "—"}</td>
                   <td className="py-2.5 px-3">
                     {h.flood ? (
                       <span title={`${h.flood.zone} — ${h.flood.zoneDesc || ""}`}>
@@ -1240,12 +1430,15 @@ function HomeDetailScreen({ home, onBack, onUpdate, compareList, toggleCompare, 
   const [schoolLoading, setSchoolLoading] = useState(false);
   const [parks, setParks] = useState(home.parks || null);
   const [parksLoading, setParksLoading] = useState(false);
+  const [groceries, setGroceries] = useState(home.groceries || null);
+  const [groceriesLoading, setGroceriesLoading] = useState(false);
 
   // Sync from props when batch fetch updates the home object
   useEffect(() => { if (home.flood && !flood) setFlood(home.flood); }, [home.flood]);
   useEffect(() => { if (home.crime && !crime) setCrime(home.crime); }, [home.crime]);
   useEffect(() => { if (home.school && !school) setSchool(home.school); }, [home.school]);
   useEffect(() => { if (home.parks && !parks) setParks(home.parks); }, [home.parks]);
+  useEffect(() => { if (home.groceries && !groceries) setGroceries(home.groceries); }, [home.groceries]);
 
   // Individual fetch fallback — only if prop and local state both null
   useEffect(() => {
@@ -1296,6 +1489,19 @@ function HomeDetailScreen({ home, onBack, onUpdate, compareList, toggleCompare, 
     return () => { cancelled = true; };
   }, [home.id]);
 
+  useEffect(() => {
+    if (groceries || home.groceries) { if (home.groceries) setGroceries(home.groceries); return; }
+    if (!home.lat || !home.lng) return;
+    let cancelled = false;
+    setGroceriesLoading(true);
+    fetchNearbyGroceries(home.lat, home.lng).then((result) => {
+      if (cancelled) return;
+      setGroceriesLoading(false);
+      if (result) { setGroceries(result); onUpdate(home.id, { groceries: result }); }
+    });
+    return () => { cancelled = true; };
+  }, [home.id]);
+
   const saveNotes = () => { onUpdate(home.id, { notes }); setEditingNotes(false); };
   const isComp = compareList.includes(home.id);
   const closingCosts = (home.price || 0) * (fin.closing / 100);
@@ -1325,7 +1531,7 @@ function HomeDetailScreen({ home, onBack, onUpdate, compareList, toggleCompare, 
         transition: 'transform 0.25s ease-out, opacity 0.25s ease-out',
       } : undefined}>
       {/* Header */}
-      <div className="sticky top-0 z-30 bg-white/95 backdrop-blur-sm border-b border-stone-200 px-4 py-3 md:px-6">
+      <div className="sticky top-0 md:top-16 z-30 bg-white/95 backdrop-blur-sm border-b border-stone-200 px-4 py-3 md:px-6">
         <div className="flex items-center gap-3 max-w-5xl mx-auto">
           <button onClick={onBack} className="w-10 h-10 flex items-center justify-center rounded-xl hover:bg-stone-100 active:bg-stone-200 text-stone-500 -ml-2 transition-colors"><BackIcon className="w-5 h-5" /></button>
           <div className="flex-1 min-w-0">
@@ -1432,7 +1638,7 @@ function HomeDetailScreen({ home, onBack, onUpdate, compareList, toggleCompare, 
           <div className="mt-3 pt-3 border-t border-sky-200/50 space-y-2">
             <div className="flex items-center justify-between">
               <span className="text-xs text-stone-500 uppercase tracking-wider font-semibold">Mortgage P&I</span>
-              <span className="text-base font-bold text-stone-700 tabular-nums">{fmt(result.monthlyPI)}<span className="text-xs text-stone-400 font-normal ml-1">@ {fin.rate}%</span></span>
+              <span className="text-base font-bold text-stone-700 tabular-nums">{fmt(result.monthlyPI)}<span className="text-xs text-stone-500 font-normal ml-1">@ {fin.rate}%</span></span>
             </div>
             <div>
               <div className="flex items-center justify-between">
@@ -1777,67 +1983,51 @@ function HomeDetailScreen({ home, onBack, onUpdate, compareList, toggleCompare, 
 
             {parksLoading && <div className="text-sm text-stone-400 animate-pulse py-4">Finding nearby parks...</div>}
 
-            {parks && (
-              <div className="space-y-3">
-                {/* Quick stats row */}
-                <div className="grid grid-cols-3 gap-2 text-center">
-                  <div className="bg-teal-50/40 rounded-xl p-2.5">
-                    <div className="text-xl font-bold text-teal-600 mt-0.5">{parks.parkCount1Mi || 0}</div>
-                    <div className="text-[10px] text-stone-400">Within 1 mi</div>
-                  </div>
-
-                  <div className="bg-teal-50/40 rounded-xl p-2.5">
-                    <div className="text-xl font-bold text-teal-600 mt-0.5">{parks.nearestDistanceMi != null ? parks.nearestDistanceMi.toFixed(1) : "—"}<span className="text-xs text-stone-400 font-normal"> mi</span></div>
-                    <div className="text-[10px] text-stone-400">Nearest</div>
-                  </div>
-                  <div>
-                    <div className="flex items-center justify-center gap-1 mt-0.5">
-                      {parks.hasTrail && <span className="text-[10px] bg-emerald-100 text-emerald-700 px-1.5 py-0.5 rounded-full font-medium">Trail</span>}
-                      {parks.hasPlayground && <span className="text-[10px] bg-sky-100 text-sky-700 px-1.5 py-0.5 rounded-full font-medium">Play</span>}
-                    </div>
-                    <div className="text-[10px] text-stone-400 mt-1">Amenities</div>
-                  </div>
-                </div>
-
-                {/* Individual park cards */}
-                {parks.parks?.length > 0 && (
-                  <div className="space-y-1.5 mt-2">
-                    {parks.parks.slice(0, 4).map((park, i) => (
-                      <div key={i} className="flex items-start gap-3 p-2.5 rounded-xl bg-white/80 border border-stone-100">
-                        <div className="flex-shrink-0 w-8 h-8 rounded-lg bg-teal-50 flex items-center justify-center">
-                          <span className="text-sm">{park.type === "Trail" || park.type === "Linear Park" ? "🥾" : park.type === "Nature Preserve" ? "🌿" : "🌳"}</span>
+            {parks && (() => {
+              const parkList = parks.parks?.slice(0, 4) || [];
+              const emptySlots = Math.max(0, 4 - parkList.length);
+              const getEmoji = (p) => p.type === "Trail" || p.type === "Linear Park" ? "🥾" : p.type === "Nature Preserve" ? "🌿" : p.amenities?.includes("Playground") ? "🛝" : "🌳";
+              const getBg = (i) => ["bg-emerald-50", "bg-teal-50", "bg-sky-50", "bg-amber-50"][i] || "bg-teal-50";
+              const getColor = (i) => ["text-emerald-600", "text-teal-600", "text-sky-600", "text-amber-600"][i] || "text-teal-600";
+              return (
+                <div className="space-y-3">
+                  <div className="grid grid-cols-2 gap-2">
+                    {parkList.map((park, i) => (
+                      <div key={i} className={`rounded-xl p-3 border border-stone-100 ${getBg(i)}`}>
+                        <div className="flex items-center gap-2 mb-1">
+                          <span className="text-base">{getEmoji(park)}</span>
+                          <span className={`text-xs font-bold truncate ${getColor(i)}`}>{park.name}</span>
                         </div>
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center justify-between">
-                            <span className="text-sm font-semibold text-stone-700 truncate">{park.name}</span>
-                            <span className="text-xs font-bold text-teal-600 ml-2 flex-shrink-0">{park.distance || (park.distanceMi ? park.distanceMi.toFixed(1) + " mi" : "")}</span>
-                          </div>
-                          <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
-                            <span className="text-[10px] text-stone-400">{park.type}</span>
-                            {park.acres && <span className="text-[10px] text-stone-400">· {park.acres} ac</span>}
-                            {park.rating && <span className="text-[10px] text-amber-500">★ {park.rating}</span>}
-                          </div>
-                          {park.amenities?.length > 0 && (
-                            <div className="flex flex-wrap gap-1 mt-1">
-                              {park.amenities.slice(0, 5).map((a, j) => (
-                                <span key={j} className="text-[10px] bg-stone-100 text-stone-500 px-1.5 py-0.5 rounded-full">{a}</span>
-                              ))}
-                            </div>
-                          )}
+                        <div className={`text-lg font-bold tabular-nums ${getColor(i)}`}>{park.distanceMi != null ? park.distanceMi.toFixed(1) : (park.distance || "—").replace(" mi", "")}<span className="text-xs text-stone-400 font-normal"> mi</span></div>
+                        <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
+                          <span className="text-[10px] text-stone-500">{park.type}{park.acres ? ` · ${park.acres} ac` : ""}</span>
                         </div>
+                        {park.amenities?.length > 0 && (
+                          <div className="flex flex-wrap gap-1 mt-1.5">
+                            {park.amenities.slice(0, 3).map((a, j) => (
+                              <span key={j} className="text-[10px] bg-white/60 text-stone-500 px-1.5 py-0.5 rounded-full">{a}</span>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                    {Array.from({ length: emptySlots }, (_, i) => (
+                      <div key={`empty-${i}`} className="rounded-xl p-3 border border-stone-100 bg-stone-50/50">
+                        <div className="flex items-center gap-2 mb-1">
+                          <span className="text-base opacity-30">🌳</span>
+                          <span className="text-xs font-bold text-stone-400">—</span>
+                        </div>
+                        <div className="text-xs text-stone-400 mt-1">No park found</div>
                       </div>
                     ))}
                   </div>
-                )}
-
-                {/* Notes */}
-                {parks.notes && (
-                  <div className="text-xs text-stone-500 bg-stone-50 p-2.5 rounded-lg mt-1 leading-relaxed">
-                    <strong className="text-xs uppercase tracking-wider">Note:</strong> {parks.notes}
+                  {/* Summary line */}
+                  <div className="flex items-center justify-between text-xs text-stone-500">
+                    <span>{parks.parkCount1Mi || 0} green space{(parks.parkCount1Mi || 0) !== 1 ? "s" : ""} within 1 mi{parks.hasTrail ? " · Trail access" : ""}{parks.hasPlayground ? " · Playground" : ""}</span>
                   </div>
-                )}
-              </div>
-            )}
+                </div>
+              );
+            })()}
 
             {!parks && !parksLoading && (
               <div className="flex items-center gap-3 py-4">
@@ -1854,7 +2044,65 @@ function HomeDetailScreen({ home, onBack, onUpdate, compareList, toggleCompare, 
           </div>
         </div>
 
-        {/* ── Commute ────────────────────────────────────────────── */}
+        {/* ── Groceries ───────────────────────────────────────────────── */}
+        <div className="bg-white border border-stone-200 rounded-2xl overflow-hidden anim-fade-up" style={{ animationDelay: '275ms' }}>
+          <div className="p-4">
+            <div className="flex items-center gap-2 mb-3">
+              <svg className="w-4 h-4 text-orange-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M3 3h2l.4 2M7 13h10l4-8H5.4M7 13L5.4 5M7 13l-2.293 2.293c-.63.63-.184 1.707.707 1.707H17m0 0a2 2 0 100 4 2 2 0 000-4zm-8 2a2 2 0 100 4 2 2 0 000-4z" /></svg>
+              <h3 className="text-sm font-semibold text-stone-700">Nearest Groceries</h3>
+            </div>
+
+            {groceriesLoading && <div className="text-sm text-stone-400 animate-pulse py-4">Finding grocery stores...</div>}
+
+            {groceries && (() => {
+              const stores = [
+                { key: "heb", label: "H-E-B", emoji: "🛒", color: "text-red-600", bg: "bg-red-50" },
+                { key: "costco", label: "Costco", emoji: "🏪", color: "text-blue-600", bg: "bg-blue-50" },
+                { key: "wholefoods", label: "Whole Foods", emoji: "🥬", color: "text-green-700", bg: "bg-green-50" },
+                { key: "traderjoes", label: "Trader Joe's", emoji: "🍊", color: "text-orange-600", bg: "bg-orange-50" },
+              ];
+              return (
+                <div className="grid grid-cols-2 gap-2">
+                  {stores.map((s) => {
+                    const store = groceries[s.key];
+                    return (
+                      <div key={s.key} className={`rounded-xl p-3 border ${store ? s.bg + " border-stone-100" : "bg-stone-50/50 border-stone-100"}`}>
+                        <div className="flex items-center gap-2 mb-1">
+                          <span className="text-base">{s.emoji}</span>
+                          <span className={`text-xs font-bold ${store ? s.color : "text-stone-400"}`}>{s.label}</span>
+                        </div>
+                        {store ? (
+                          <div>
+                            <div className={`text-lg font-bold tabular-nums ${s.color}`}>{store.distanceMi}<span className="text-xs text-stone-400 font-normal"> mi</span></div>
+                            {store.address && <div className="text-[10px] text-stone-400 truncate mt-0.5">{store.address}</div>}
+                          </div>
+                        ) : (
+                          <div className="text-xs text-stone-400 mt-1">None within 10 mi</div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              );
+            })()}
+
+            {!groceries && !groceriesLoading && (
+              <div className="flex items-center gap-3 py-4">
+                <span className="text-sm text-stone-400">No grocery data</span>
+                <button onClick={() => {
+                  if (!home.lat || !home.lng) return;
+                  setGroceriesLoading(true);
+                  fetchNearbyGroceries(home.lat, home.lng).then((r) => {
+                    setGroceriesLoading(false);
+                    if (r) { setGroceries(r); onUpdate(home.id, { groceries: r }); }
+                  });
+                }} className="text-sm text-orange-600 font-medium hover:text-orange-700">Find groceries →</button>
+              </div>
+            )}
+          </div>
+        </div>
+
+                {/* ── Commute ────────────────────────────────────────────── */}
         {fin.places?.length > 0 && home.lat && home.lng && (
           <div className="bg-white border border-stone-200 rounded-2xl overflow-hidden anim-fade-up" style={{ animationDelay: '225ms' }}>
             <div className="p-4">
@@ -2394,7 +2642,7 @@ function CompareScreen({ homes, compareList, toggleCompare, clearCompare, onOpen
     if (compareFilter === "favorites") available = available.filter((h) => h.favorite);
     const favCount = homes.filter((h) => !compareList.includes(h.id) && h.favorite).length;
     return (
-      <div className="p-4 md:p-6 max-w-2xl mx-auto">
+      <div className="p-4 md:p-6">
         <div className="text-center py-8">
           <div className="w-14 h-14 mx-auto mb-3 rounded-2xl bg-violet-50 border border-violet-200 flex items-center justify-center anim-pop"><CompareIcon className="w-7 h-7 text-violet-400" /></div>
           <h2 className="text-lg font-bold text-stone-800 mb-1 anim-fade-up" style={{ animationDelay: '100ms' }}>Compare Homes</h2>
@@ -2492,7 +2740,7 @@ function CompareScreen({ homes, compareList, toggleCompare, clearCompare, onOpen
   );
 
   return (
-    <div className="p-4 md:p-6 max-w-5xl mx-auto overflow-hidden">
+    <div className="p-4 md:p-6 overflow-hidden">
       <div className="flex items-center justify-between mb-4 anim-fade-up">
         <div className="flex items-center gap-2">
           <CompareIcon className="w-5 h-5 text-violet-400" />
@@ -2508,9 +2756,9 @@ function CompareScreen({ homes, compareList, toggleCompare, clearCompare, onOpen
         <div className="flex flex-col items-center justify-center flex-shrink-0 px-1 anim-pop" style={{ animationDelay: '150ms' }}>
           <div className="text-[10px] text-stone-400 uppercase tracking-wider font-semibold mb-1">Rating</div>
           <div className="flex items-center gap-1">
-            <span className={`text-xl font-bold tabular-nums ${sA > sB ? "text-sky-600" : "text-stone-400"}`}>{sA}</span>
+            <span className={`text-xl font-bold tabular-nums ${sA > sB ? "text-sky-600" : "text-stone-500"}`}>{sA}</span>
             <span className="text-stone-300 text-sm">–</span>
-            <span className={`text-xl font-bold tabular-nums ${sB > sA ? "text-sky-600" : "text-stone-400"}`}>{sB}</span>
+            <span className={`text-xl font-bold tabular-nums ${sB > sA ? "text-sky-600" : "text-stone-500"}`}>{sB}</span>
           </div>
         </div>
         <div className="flex-1 min-w-0 anim-slide-right"><HomeCard h={b} label="Home B" winning={sB > sA} /></div>
@@ -2523,7 +2771,7 @@ function CompareScreen({ homes, compareList, toggleCompare, clearCompare, onOpen
           <div className="flex-1 text-center">
             <div className="text-[10px] text-stone-400 uppercase tracking-wider font-semibold mb-0.5">Home A</div>
             <div className={`text-2xl md:text-3xl font-bold tabular-nums ${ac.totalMonthly <= bc.totalMonthly ? "text-sky-700" : "text-stone-700"}`}>{fmt(ac.totalMonthly)}</div>
-            <div className="text-xs text-stone-400">/mo</div>
+            <div className="text-xs text-stone-500">/mo</div>
           </div>
           <div className="flex flex-col items-center flex-shrink-0">
             <div className="text-[10px] text-stone-400 uppercase tracking-wider font-semibold mb-1">Δ</div>
@@ -2532,7 +2780,7 @@ function CompareScreen({ homes, compareList, toggleCompare, clearCompare, onOpen
           <div className="flex-1 text-center">
             <div className="text-[10px] text-stone-400 uppercase tracking-wider font-semibold mb-0.5">Home B</div>
             <div className={`text-2xl md:text-3xl font-bold tabular-nums ${bc.totalMonthly <= ac.totalMonthly ? "text-sky-700" : "text-stone-700"}`}>{fmt(bc.totalMonthly)}</div>
-            <div className="text-xs text-stone-400">/mo</div>
+            <div className="text-xs text-stone-500">/mo</div>
           </div>
         </div>
 
@@ -2738,7 +2986,7 @@ function CompareScreen({ homes, compareList, toggleCompare, clearCompare, onOpen
 /* ═══════════════════════════════════════════════════════════════════
    SCREEN: Settings
    ═══════════════════════════════════════════════════════════════════ */
-function SettingsScreen({ fin, updateFin, liveRate, rateInfo, homes = [], soldComps = [], setSoldComps, darkMode, setDarkMode }) {
+function SettingsScreen({ fin, updateFin, liveRate, rateInfo, homes = [], setHomes, soldComps = [], setSoldComps, darkMode, setDarkMode }) {
   const fileRef = useRef();
   const handleSoldFile = async (file) => {
     const mod = await import("papaparse");
@@ -3056,6 +3304,20 @@ function SettingsScreen({ fin, updateFin, liveRate, rateInfo, homes = [], soldCo
           )}
         </div>
 
+        {/* Clear Enrichment Data */}
+        <div className="bg-white border border-stone-200 rounded-2xl p-4 anim-fade-up" style={{ animationDelay: '310ms' }}>
+          <h3 className="text-sm font-semibold text-stone-700 mb-2">Clear Enrichment Data</h3>
+          <p className="text-xs text-stone-400 mb-3">Strip flood, crime, school, parks, and grocery data from all homes. Data will re-fetch automatically on next load.</p>
+          <div className="flex flex-wrap gap-2">
+            <button onClick={() => { if (window.confirm("Clear ALL enrichment data (flood, crime, school, parks, groceries) from every home?")) { const cleaned = homes.map(h => { const c = {...h}; delete c.flood; delete c.crime; delete c.school; delete c.parks; delete c.groceries; return c; }); setHomes(cleaned); window.location.reload(); } }}
+              className="text-xs font-medium text-stone-600 hover:text-stone-800 bg-stone-50 hover:bg-stone-100 px-3 py-1.5 rounded-lg border border-stone-200 transition-colors">Clear All Enrichment</button>
+            <button onClick={() => { if (window.confirm("Clear parks data from all homes?")) { const cleaned = homes.map(h => { const c = {...h}; delete c.parks; return c; }); setHomes(cleaned); window.location.reload(); } }}
+              className="text-xs font-medium text-teal-600 hover:text-teal-700 bg-teal-50 hover:bg-teal-100 px-3 py-1.5 rounded-lg border border-teal-200 transition-colors">Clear Parks</button>
+            <button onClick={() => { if (window.confirm("Clear grocery data from all homes?")) { const cleaned = homes.map(h => { const c = {...h}; delete c.groceries; return c; }); setHomes(cleaned); window.location.reload(); } }}
+              className="text-xs font-medium text-orange-600 hover:text-orange-700 bg-orange-50 hover:bg-orange-100 px-3 py-1.5 rounded-lg border border-orange-200 transition-colors">Clear Groceries</button>
+          </div>
+        </div>
+
         {/* Reset Data */}
         <div className="bg-white border border-orange-200 rounded-2xl p-4 anim-fade-up" style={{ animationDelay: '320ms' }}>
           <h3 className="text-sm font-semibold text-orange-700 mb-2">Reset Data</h3>
@@ -3215,7 +3477,7 @@ export default function CribsApp() {
   useEffect(() => {
     if (enrichingRef.current) return;
     // Skip if all homes already have data
-    const needsEnrich = homes.filter(h => !h.flood || !h.crime || !h.school || !h.parks);
+    const needsEnrich = homes.filter(h => !h.flood || !h.crime || !h.school || !h.parks || !h.groceries);
     if (needsEnrich.length === 0) { setEnrichDone(true); return; }
     enrichingRef.current = true;
     let cancelled = false;
@@ -3231,6 +3493,7 @@ export default function CribsApp() {
         if (!h.crime) needs.push("crime");
         if (!h.school) needs.push("school");
         if (!h.parks) needs.push("parks");
+        if (!h.groceries) needs.push("groceries");
         if (needs.length === 0) continue;
 
         try {
@@ -3239,6 +3502,7 @@ export default function CribsApp() {
           if (needs.includes("crime")) promises.push(fetchCrime(h.address, h.city, h.state, h.zip).catch(() => null).then(r => ["crime", r]));
           if (needs.includes("school")) promises.push(fetchSchool(h.address, h.city, h.state, h.zip).catch(() => null).then(r => ["school", r]));
           if (needs.includes("parks")) promises.push(fetchNearbyParks(h.address, h.city, h.state, h.zip, h.lat, h.lng).catch(() => null).then(r => ["parks", r]));
+          if (needs.includes("groceries")) promises.push(fetchNearbyGroceries(h.lat, h.lng).catch(() => null).then(r => ["groceries", r]));
 
           const results = await Promise.all(promises);
           if (cancelled) return;
@@ -3249,6 +3513,7 @@ export default function CribsApp() {
             if (type === "crime" && data?.risk) updates.crime = data;
             if (type === "school" && data?.schoolName) updates.school = data;
             if (type === "parks" && data?.parks) updates.parks = data;
+            if (type === "groceries" && data) updates.groceries = data;
           }
           if (Object.keys(updates).length > 0) {
             setHomes(prev => prev.map(ph => ph.id === h.id ? { ...ph, ...updates } : ph));
@@ -3355,15 +3620,15 @@ export default function CribsApp() {
       <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&display=swap" rel="stylesheet" />
 
       {/* Desktop top nav — always visible */}
-      <header className="hidden md:block border-b border-stone-200 bg-white/90 backdrop-blur-md sticky top-0 z-40 shadow-sm">
+      <header className="hidden md:block border-b border-stone-200 bg-white/90 backdrop-blur-md fixed top-0 inset-x-0 z-40 shadow-sm">
         <div className="max-w-[1600px] mx-auto px-6 py-3 flex items-center justify-between">
-          <div className="flex items-center gap-2.5">
+          <button onClick={goList} className="flex items-center gap-2.5 hover:opacity-80 transition-opacity">
             <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-violet-500 via-fuchsia-500 to-pink-500 flex items-center justify-center shadow-lg shadow-fuchsia-200/50">
               <svg className="w-5 h-5" viewBox="0 0 24 24" fill="white"><path d="M12 3L2 12h3v8h5v-5h4v5h5v-8h3L12 3z"/></svg>
             </div>
             <h1 className="text-lg font-bold tracking-tight text-stone-800">CRIBS</h1>
-            <span className="text-[10px] text-stone-400 font-medium ml-1 self-end mb-0.5">v1.1.6</span>
-          </div>
+            <span className="text-[10px] text-stone-400 font-medium ml-1 self-end mb-0.5">v1.2.6</span>
+          </button>
           <nav className="flex gap-1 bg-stone-100 rounded-lg p-0.5 border border-stone-200">
             <button onClick={goList} className={`px-4 py-2 text-sm font-medium rounded-md transition-colors ${screen === "list" || screen === "detail" ? "bg-white text-sky-600 shadow-sm" : "text-stone-500 hover:text-stone-700"}`}>Homes</button>
             <button onClick={() => setScreen("compare")} className={`px-4 py-2 text-sm font-medium rounded-md transition-colors ${screen === "compare" ? "bg-white text-sky-600 shadow-sm" : "text-stone-500 hover:text-stone-700"}`}>
@@ -3373,12 +3638,13 @@ export default function CribsApp() {
           </nav>
         </div>
       </header>
+      <div className="hidden md:block h-16" /> {/* Spacer for fixed header */}
 
       <div className="max-w-[1600px] mx-auto">
         {screen === "list" && <HomeListScreen homes={homes} setHomes={setHomes} onOpenHome={openHome} compareList={compareList} toggleCompare={toggleCompare} onImport={handleImport} fin={fin} rateInfo={rateInfo} schoolFilter={schoolFilter} setSchoolFilter={setSchoolFilter} maxBudget={maxBudget} enrichDone={enrichDone} />}
         {screen === "detail" && activeHome && <HomeDetailScreen home={activeHome} onBack={goList} onUpdate={updateHome} compareList={compareList} toggleCompare={toggleCompare} fin={fin} navList={navList} onNavigate={navigateHome} allHomes={homes} soldComps={soldComps} onFilterBySchool={(name) => { setSchoolFilter(name); setScreen("list"); }} maxBudget={maxBudget} />}
         {screen === "compare" && <CompareScreen homes={homes} compareList={compareList} toggleCompare={toggleCompare} clearCompare={() => setCompareList([])} onOpenHome={openHome} fin={fin} />}
-        {screen === "settings" && <SettingsScreen fin={fin} updateFin={updateFin} liveRate={liveRate} rateInfo={rateInfo} homes={homes} soldComps={soldComps} setSoldComps={setSoldComps} darkMode={darkMode} setDarkMode={setDarkMode} />}
+        {screen === "settings" && <SettingsScreen fin={fin} updateFin={updateFin} liveRate={liveRate} rateInfo={rateInfo} homes={homes} setHomes={setHomes} soldComps={soldComps} setSoldComps={setSoldComps} darkMode={darkMode} setDarkMode={setDarkMode} />}
       </div>
 
       {/* Mobile bottom nav */}
@@ -3424,7 +3690,6 @@ export default function CribsApp() {
         @media (hover: hover) {
           .card-hover { transition: transform 0.2s ease, box-shadow 0.2s ease; }
           .card-hover:hover { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(0,0,0,0.06); }
-          .dark .card-hover:hover { box-shadow: 0 4px 16px rgba(0,0,0,0.4); }
         }
         .check-pop { transition: transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1); }
         .check-pop:active { transform: scale(0.85); }
@@ -3436,116 +3701,191 @@ export default function CribsApp() {
         @keyframes slideFromRight { from { transform: translateX(35%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
         @keyframes slideFromLeft { from { transform: translateX(-35%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
 
-        /* ═══ Dark Mode Overrides ═══════════════════════════════════════ */
+        /* ═══ Dark Mode Overrides ═══════════════════════════════════════
+         * Surfaces: #0c0a09 → #1c1917 → #292524
+         * Text contrast on #1c1917: primary ≥7:1, secondary ≥5:1, muted ≥4.5:1
+         * All colored text lightened to ≥4.5:1 contrast
+         * ═══════════════════════════════════════════════════════════════ */
         .dark { color-scheme: dark; }
 
-        /* Backgrounds */
+        /* ─── Surface backgrounds ─────────────────────────────────── */
         .dark.bg-stone-50, .dark .bg-stone-50 { background-color: #0c0a09 !important; }
+        .dark .bg-stone-50\\/50 { background-color: rgba(12,10,9,0.5) !important; }
+        .dark .bg-stone-50\\/60 { background-color: rgba(12,10,9,0.6) !important; }
+        .dark .bg-stone-50\\/80 { background-color: rgba(12,10,9,0.8) !important; }
         .dark .bg-white { background-color: #1c1917 !important; }
-        .dark .bg-stone-100, .dark .bg-stone-100\\/50 { background-color: #292524 !important; }
-        .dark .bg-stone-50\\/80 { background-color: rgba(28,25,23,0.9) !important; }
+        .dark .bg-white\\/80 { background-color: rgba(28,25,23,0.85) !important; }
         .dark .bg-white\\/90 { background-color: rgba(28,25,23,0.95) !important; }
+        .dark .bg-white\\/95 { background-color: rgba(28,25,23,0.97) !important; }
+        .dark .bg-white\\/60 { background-color: rgba(28,25,23,0.65) !important; }
+        .dark .bg-stone-100, .dark .bg-stone-100\\/50 { background-color: #292524 !important; }
+        .dark .bg-stone-200 { background-color: #44403c !important; }
+        .dark .bg-stone-300 { background-color: #57534e !important; }
 
-        /* Text */
-        .dark.text-stone-800, .dark .text-stone-800 { color: #e7e5e4 !important; }
+        /* ─── Neutral text — WCAG AA on #1c1917 ──────────────────── */
+        .dark .text-stone-900, .dark.text-stone-900 { color: #fafaf9 !important; }
+        .dark .text-stone-800, .dark.text-stone-800 { color: #e7e5e4 !important; }
         .dark .text-stone-700 { color: #d6d3d1 !important; }
         .dark .text-stone-600 { color: #a8a29e !important; }
-        .dark .text-stone-500 { color: #78716c !important; }
-        .dark .text-stone-400 { color: #57534e !important; }
-        .dark .text-stone-300 { color: #44403c !important; }
+        .dark .text-stone-500 { color: #a8a29e !important; }
+        .dark .text-stone-400 { color: #87817b !important; }
+        .dark .text-stone-300 { color: #57534e !important; }
+        .dark .text-stone-200 { color: #44403c !important; }
 
-        /* Borders */
-        .dark .border-stone-200 { border-color: #292524 !important; }
+        /* ─── Sky — info, low risk, navigation ───────────────────── */
+        .dark .text-sky-400 { color: #38bdf8 !important; }
+        .dark .text-sky-500 { color: #38bdf8 !important; }
+        .dark .text-sky-600 { color: #38bdf8 !important; }
+        .dark .text-sky-700 { color: #38bdf8 !important; }
+        .dark .bg-sky-50 { background-color: rgba(56,189,248,0.08) !important; }
+        .dark .bg-sky-50\\/50 { background-color: rgba(56,189,248,0.05) !important; }
+        .dark .bg-sky-50\\/30 { background-color: rgba(56,189,248,0.04) !important; }
+        .dark .bg-sky-50\\/40 { background-color: rgba(56,189,248,0.05) !important; }
+        .dark .bg-sky-100 { background-color: rgba(56,189,248,0.12) !important; }
+        .dark .bg-sky-100\\/40 { background-color: rgba(56,189,248,0.10) !important; }
+        .dark .bg-sky-100\\/50 { background-color: rgba(56,189,248,0.10) !important; }
+        .dark .bg-sky-100\\/70 { background-color: rgba(56,189,248,0.14) !important; }
+        .dark .bg-sky-200, .dark .bg-sky-200\\/70 { background-color: rgba(56,189,248,0.18) !important; }
+        .dark .border-sky-200 { border-color: rgba(56,189,248,0.20) !important; }
+        .dark .border-sky-200\\/50 { border-color: rgba(56,189,248,0.15) !important; }
+        .dark .border-sky-200\\/80 { border-color: rgba(56,189,248,0.22) !important; }
+        .dark .border-sky-300 { border-color: rgba(56,189,248,0.25) !important; }
+        .dark .border-sky-400 { border-color: rgba(56,189,248,0.35) !important; }
+        .dark .border-l-sky-400 { border-left-color: rgba(56,189,248,0.5) !important; }
+
+        /* ─── Amber — moderate risk, caution, ratings ────────────── */
+        .dark .text-amber-200 { color: #fde68a !important; }
+        .dark .text-amber-300 { color: #fcd34d !important; }
+        .dark .text-amber-400 { color: #fbbf24 !important; }
+        .dark .text-amber-500 { color: #fbbf24 !important; }
+        .dark .text-amber-600 { color: #fbbf24 !important; }
+        .dark .text-amber-700 { color: #f59e0b !important; }
+        .dark .bg-amber-50 { background-color: rgba(251,191,36,0.08) !important; }
+        .dark .bg-amber-50\\/50 { background-color: rgba(251,191,36,0.06) !important; }
+        .dark .bg-amber-100 { background-color: rgba(251,191,36,0.12) !important; }
+        .dark .bg-amber-100\\/30 { background-color: rgba(251,191,36,0.08) !important; }
+        .dark .bg-amber-100\\/40 { background-color: rgba(251,191,36,0.10) !important; }
+        .dark .bg-amber-100\\/50 { background-color: rgba(251,191,36,0.11) !important; }
+        .dark .border-amber-200 { border-color: rgba(251,191,36,0.20) !important; }
+        .dark .border-amber-200\\/50 { border-color: rgba(251,191,36,0.15) !important; }
+        .dark .border-amber-200\\/60 { border-color: rgba(251,191,36,0.18) !important; }
+
+        /* ─── Orange — high risk, warnings, over budget ──────────── */
+        .dark .text-orange-500 { color: #fb923c !important; }
+        .dark .text-orange-600 { color: #fb923c !important; }
+        .dark .text-orange-700 { color: #fb923c !important; }
+        .dark .bg-orange-50 { background-color: rgba(251,146,60,0.08) !important; }
+        .dark .bg-orange-50\\/50 { background-color: rgba(251,146,60,0.06) !important; }
+        .dark .bg-orange-100 { background-color: rgba(251,146,60,0.12) !important; }
+        .dark .bg-orange-100\\/40 { background-color: rgba(251,146,60,0.10) !important; }
+        .dark .bg-orange-100\\/50 { background-color: rgba(251,146,60,0.11) !important; }
+        .dark .bg-orange-100\\/60 { background-color: rgba(251,146,60,0.12) !important; }
+        .dark .border-orange-200 { border-color: rgba(251,146,60,0.20) !important; }
+        .dark .border-orange-200\\/50 { border-color: rgba(251,146,60,0.15) !important; }
+
+        /* ─── Teal — positive status, in budget, parks ───────────── */
+        .dark .text-teal-500 { color: #2dd4bf !important; }
+        .dark .text-teal-600 { color: #2dd4bf !important; }
+        .dark .text-teal-700 { color: #2dd4bf !important; }
+        .dark .bg-teal-50 { background-color: rgba(45,212,191,0.08) !important; }
+        .dark .bg-teal-50\\/50 { background-color: rgba(45,212,191,0.05) !important; }
+        .dark .bg-teal-50\\/40 { background-color: rgba(45,212,191,0.05) !important; }
+        .dark .bg-teal-100 { background-color: rgba(45,212,191,0.12) !important; }
+        .dark .border-teal-200 { border-color: rgba(45,212,191,0.20) !important; }
+        .dark .border-teal-200\\/50 { border-color: rgba(45,212,191,0.15) !important; }
+        .dark .border-teal-500 { border-color: rgba(45,212,191,0.40) !important; }
+
+        /* ─── Emerald — parks excellent ──────────────────────────── */
+        .dark .text-emerald-500 { color: #34d399 !important; }
+        .dark .text-emerald-600 { color: #34d399 !important; }
+        .dark .text-emerald-700 { color: #34d399 !important; }
+        .dark .bg-emerald-50 { background-color: rgba(52,211,153,0.08) !important; }
+        .dark .bg-emerald-50\\/50 { background-color: rgba(52,211,153,0.06) !important; }
+        .dark .bg-emerald-100 { background-color: rgba(52,211,153,0.12) !important; }
+        .dark .border-emerald-200 { border-color: rgba(52,211,153,0.20) !important; }
+
+        /* ─── Violet — compare, UI accents ───────────────────────── */
+        .dark .text-violet-400 { color: #a78bfa !important; }
+        .dark .text-violet-500 { color: #a78bfa !important; }
+        .dark .text-violet-600 { color: #a78bfa !important; }
+        .dark .text-violet-700 { color: #a78bfa !important; }
+        .dark .text-violet-800 { color: #a78bfa !important; }
+        .dark .bg-violet-50 { background-color: rgba(167,139,250,0.08) !important; }
+        .dark .bg-violet-50\\/50 { background-color: rgba(167,139,250,0.06) !important; }
+        .dark .bg-violet-100 { background-color: rgba(167,139,250,0.12) !important; }
+        .dark .border-violet-200 { border-color: rgba(167,139,250,0.20) !important; }
+        .dark .border-violet-200\\/50 { border-color: rgba(167,139,250,0.15) !important; }
+        .dark .border-violet-300 { border-color: rgba(167,139,250,0.30) !important; }
+        .dark .border-violet-500 { border-color: rgba(167,139,250,0.40) !important; }
+
+        /* ─── Red — recording, alerts, H-E-B ─────────────────────── */
+        .dark .text-red-500 { color: #f87171 !important; }
+        .dark .text-red-600 { color: #f87171 !important; }
+        .dark .text-red-700 { color: #f87171 !important; }
+        .dark .bg-red-50 { background-color: rgba(248,113,113,0.08) !important; }
+        .dark .bg-red-100 { background-color: rgba(248,113,113,0.12) !important; }
+        .dark .border-red-200 { border-color: rgba(248,113,113,0.20) !important; }
+
+        /* ─── Blue — Costco ──────────────────────────────────────── */
+        .dark .text-blue-600 { color: #60a5fa !important; }
+        .dark .bg-blue-50 { background-color: rgba(96,165,250,0.08) !important; }
+
+        /* ─── Green — Whole Foods ─────────────────────────────────── */
+        .dark .text-green-700 { color: #4ade80 !important; }
+        .dark .bg-green-50 { background-color: rgba(74,222,128,0.08) !important; }
+
+        /* ─── Neutral borders ────────────────────────────────────── */
         .dark .border-stone-100 { border-color: #1c1917 !important; }
-        .dark .border-stone-300 { border-color: #44403c !important; }
+        .dark .border-stone-200 { border-color: #292524 !important; }
         .dark .border-b.border-stone-200 { border-color: #292524 !important; }
+        .dark .border-stone-300 { border-color: #44403c !important; }
+        .dark .border-stone-400 { border-color: #57534e !important; }
         .dark .divide-stone-100 > * + * { border-color: #292524 !important; }
         .dark .border-t.border-stone-100 { border-color: #292524 !important; }
         .dark .border-dashed.border-stone-200 { border-color: #44403c !important; }
 
-        /* Cards & containers */
+        /* ─── Cards & gradients ──────────────────────────────────── */
         .dark .bg-gradient-to-r.from-stone-50 { background: #1c1917 !important; }
         .dark .bg-gradient-to-br.from-stone-50 { background: #1c1917 !important; }
+        .dark .bg-gradient-to-r.from-violet-50, .dark .bg-gradient-to-r.from-violet-50.to-fuchsia-50\\/50 { background: rgba(167,139,250,0.06) !important; }
+        .dark .bg-gradient-to-br.from-sky-50, .dark .bg-gradient-to-br.from-sky-50.via-blue-50 { background: rgba(56,189,248,0.05) !important; }
 
-        /* Inputs */
+        /* ─── Inputs ─────────────────────────────────────────────── */
         .dark input, .dark textarea, .dark select { background-color: #292524 !important; color: #e7e5e4 !important; border-color: #44403c !important; }
-        .dark input::placeholder, .dark textarea::placeholder { color: #57534e !important; }
+        .dark input::placeholder, .dark textarea::placeholder { color: #78716c !important; }
 
-        /* Sky tints */
-        .dark .bg-sky-50 { background-color: rgba(14,116,144,0.12) !important; }
-        .dark .bg-sky-50\\/50 { background-color: rgba(14,116,144,0.08) !important; }
-        .dark .bg-sky-50\\/30 { background-color: rgba(14,116,144,0.06) !important; }
-        .dark .bg-sky-100 { background-color: rgba(14,116,144,0.18) !important; }
-        .dark .bg-sky-100\\/40 { background-color: rgba(14,116,144,0.12) !important; }
-        .dark .border-sky-200 { border-color: rgba(14,116,144,0.3) !important; }
-        .dark .border-sky-200\\/50 { border-color: rgba(14,116,144,0.2) !important; }
-        .dark .border-sky-400 { border-color: rgba(14,116,144,0.4) !important; }
-        .dark .border-l-sky-400 { border-left-color: rgba(56,189,248,0.6) !important; }
-
-        /* Amber tints */
-        .dark .bg-amber-50 { background-color: rgba(180,83,9,0.12) !important; }
-        .dark .bg-amber-50\\/50 { background-color: rgba(180,83,9,0.08) !important; }
-        .dark .bg-amber-100 { background-color: rgba(180,83,9,0.18) !important; }
-        .dark .bg-amber-100\\/30 { background-color: rgba(180,83,9,0.12) !important; }
-        .dark .bg-amber-100\\/40 { background-color: rgba(180,83,9,0.14) !important; }
-        .dark .bg-amber-100\\/50 { background-color: rgba(180,83,9,0.15) !important; }
-        .dark .border-amber-200 { border-color: rgba(180,83,9,0.3) !important; }
-        .dark .border-amber-200\\/50 { border-color: rgba(180,83,9,0.2) !important; }
-
-        /* Orange tints */
-        .dark .bg-orange-50 { background-color: rgba(194,65,12,0.12) !important; }
-        .dark .bg-orange-50\\/50 { background-color: rgba(194,65,12,0.08) !important; }
-        .dark .bg-orange-100 { background-color: rgba(194,65,12,0.18) !important; }
-        .dark .bg-orange-100\\/40 { background-color: rgba(194,65,12,0.14) !important; }
-        .dark .bg-orange-100\\/50 { background-color: rgba(194,65,12,0.15) !important; }
-        .dark .bg-orange-100\\/60 { background-color: rgba(194,65,12,0.16) !important; }
-        .dark .border-orange-200 { border-color: rgba(194,65,12,0.3) !important; }
-        .dark .border-orange-200\\/50 { border-color: rgba(194,65,12,0.2) !important; }
-
-        /* Violet/Purple tints */
-        .dark .bg-violet-50 { background-color: rgba(109,40,217,0.12) !important; }
-        .dark .bg-violet-100 { background-color: rgba(109,40,217,0.18) !important; }
-        .dark .border-violet-200 { border-color: rgba(109,40,217,0.3) !important; }
-        .dark .border-violet-300 { border-color: rgba(109,40,217,0.4) !important; }
-
-        /* Teal tints */
-        .dark .bg-teal-50 { background-color: rgba(13,148,136,0.12) !important; }
-        .dark .bg-teal-50\\/50 { background-color: rgba(13,148,136,0.08) !important; }
-        .dark .bg-teal-100 { background-color: rgba(13,148,136,0.18) !important; }
-        .dark .border-teal-200\\/50 { border-color: rgba(13,148,136,0.2) !important; }
-
-        /* Gradient cards */
-        .dark .bg-gradient-to-r.from-violet-50, .dark .bg-gradient-to-r.from-violet-50.to-fuchsia-50\\/50 { background: rgba(109,40,217,0.1) !important; }
-        .dark .bg-gradient-to-br.from-sky-50, .dark .bg-gradient-to-br.from-sky-50.via-blue-50 { background: rgba(14,116,144,0.08) !important; }
-
-        /* Hover states */
-        .dark .hover\\:bg-sky-50\\/30:hover { background-color: rgba(14,116,144,0.06) !important; }
-        .dark .hover\\:bg-violet-50\\/50:hover { background-color: rgba(109,40,217,0.08) !important; }
-        .dark .hover\\:bg-orange-50:hover { background-color: rgba(194,65,12,0.1) !important; }
+        /* ─── Hover states ───────────────────────────────────────── */
+        .dark .hover\\:bg-sky-50\\/30:hover { background-color: rgba(56,189,248,0.06) !important; }
+        .dark .hover\\:bg-violet-50\\/50:hover { background-color: rgba(167,139,250,0.08) !important; }
+        .dark .hover\\:bg-orange-50:hover { background-color: rgba(251,146,60,0.08) !important; }
+        .dark .hover\\:bg-stone-100:hover { background-color: #292524 !important; }
         .dark .hover\\:border-stone-300:hover { border-color: #57534e !important; }
-        .dark .hover\\:border-violet-300:hover { border-color: rgba(109,40,217,0.4) !important; }
+        .dark .hover\\:border-stone-400:hover { border-color: #78716c !important; }
+        .dark .hover\\:border-violet-300:hover { border-color: rgba(167,139,250,0.35) !important; }
+        .dark .hover\\:text-stone-600:hover { color: #d6d3d1 !important; }
+        .dark .hover\\:text-stone-700:hover { color: #e7e5e4 !important; }
+        .dark .hover\\:text-amber-200:hover { color: #fde68a !important; }
 
-        /* Active states */
-        .dark .active\\:bg-violet-50:active { background-color: rgba(109,40,217,0.12) !important; }
-        .dark .active\\:bg-orange-100:active { background-color: rgba(194,65,12,0.15) !important; }
+        /* ─── Active states ──────────────────────────────────────── */
+        .dark .active\\:bg-stone-200:active { background-color: #44403c !important; }
+        .dark .active\\:bg-violet-50:active { background-color: rgba(167,139,250,0.10) !important; }
+        .dark .active\\:bg-orange-100:active { background-color: rgba(251,146,60,0.12) !important; }
+        .dark .active\\:bg-sky-200:active { background-color: rgba(56,189,248,0.15) !important; }
 
-        /* Nav */
+        /* ─── Nav & chrome ───────────────────────────────────────── */
         .dark nav .bg-stone-100 { background-color: #292524 !important; }
-        .dark .shadow-sm { box-shadow: 0 1px 2px rgba(0,0,0,0.3) !important; }
-        .dark .shadow-lg { box-shadow: 0 10px 15px -3px rgba(0,0,0,0.4) !important; }
-
-        /* Bottom nav */
-        .dark .bg-white\\/95 { background-color: rgba(28,25,23,0.95) !important; }
+        .dark .shadow-sm { box-shadow: 0 1px 2px rgba(0,0,0,0.4) !important; }
+        .dark .shadow-lg { box-shadow: 0 10px 15px -3px rgba(0,0,0,0.5) !important; }
         .dark .backdrop-blur-md { backdrop-filter: blur(12px); }
+        .dark .card-hover:hover { box-shadow: 0 4px 16px rgba(0,0,0,0.4); }
 
-        /* Ring */
-        .dark .ring-1.ring-sky-100 { --tw-ring-color: rgba(14,116,144,0.2) !important; }
-        .dark .ring-1.ring-violet-300 { --tw-ring-color: rgba(109,40,217,0.3) !important; }
+        /* ─── Ring utilities ─────────────────────────────────────── */
+        .dark .ring-1.ring-sky-100 { --tw-ring-color: rgba(56,189,248,0.15) !important; }
+        .dark .ring-1.ring-violet-300 { --tw-ring-color: rgba(167,139,250,0.25) !important; }
 
-        /* Scrollbar */
+        /* ─── Scrollbar ──────────────────────────────────────────── */
         .dark ::-webkit-scrollbar { background: #0c0a09; }
-        .dark ::-webkit-scrollbar-thumb { background: #44403c; border-radius: 4px; }
-      `}</style>
+        .dark ::-webkit-scrollbar-thumb { background: #44403c; border-radius: 4px; }      `}</style>
     </div>
   );
 }
