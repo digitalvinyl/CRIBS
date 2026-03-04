@@ -377,7 +377,7 @@ async function fetchNearbyParks(address, city, state, zip, lat, lng) {
   if (!lat || !lng) return generateParks(lat, lng);
   try {
     const radius = 1609; // 1 mile in meters
-    const query = `[out:json][timeout:10];(nwr["leisure"="park"](around:${radius},${lat},${lng});nwr["leisure"="nature_reserve"](around:${radius},${lat},${lng});nwr["leisure"="playground"](around:${radius},${lat},${lng});way["highway"~"path|cycleway"]["name"](around:${radius},${lat},${lng}););out center tags qt 40;`;
+    const query = `[out:json][timeout:10];(nwr["leisure"="park"](around:${radius},${lat},${lng});nwr["leisure"="nature_reserve"](around:${radius},${lat},${lng});nwr["leisure"="playground"](around:${radius},${lat},${lng});way["highway"~"path|cycleway"]["name"](around:${radius},${lat},${lng}););out center qt 40;`;
     const res = await fetch("https://overpass-api.de/api/interpreter", {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
@@ -394,12 +394,14 @@ async function fetchNearbyParks(address, city, state, zip, lat, lng) {
 
     for (const el of data.elements) {
       const name = el.tags?.name;
-      if (!name || seen.has(name.toLowerCase())) continue;
-      seen.add(name.toLowerCase());
+      if (!name) continue;
 
       const elLat = el.lat ?? el.center?.lat;
       const elLng = el.lon ?? el.center?.lon;
       if (!elLat || !elLng) continue;
+
+      if (seen.has(name.toLowerCase())) continue;
+      seen.add(name.toLowerCase());
 
       const dist = haversine(lat, lng, elLat, elLng);
       if (dist > 1.05) continue; // small buffer for rounding
@@ -3825,21 +3827,14 @@ export default function CribsApp() {
         if (Array.isArray(p)) {
           // Empty array = user intentionally cleared homes, respect it
           if (p.length === 0) return [];
-          // Check if data has enrichment (v1.1+ format). If localStorage homes
-          // are from a pre-enrichment version, reset to baked-in defaults.
-          const hasEnrichment = p.some(h => h.flood && h.crime);
-          if (hasEnrichment) {
-            // v1.5.6 migration: clear old school/appraisal data from Anthropic API so it re-fetches from NCES/HCAD
-            const needsMigration = p.some(h => h.school?.ratingSource === "GreatSchools" || h.school?.nicheGrade || (h.appraisal && !h.appraisal.value) || (h.appraisal && h.appraisal.source !== "HCAD (Harris County Appraisal District)"));
-            if (needsMigration) {
-              const migrated = p.map(h => ({ ...h, school: null, appraisal: null }));
-              localStorage.setItem("cribs_homes", JSON.stringify(migrated));
-              return migrated;
-            }
-            return p;
+          // One-time migration: clear old school/appraisal data from Anthropic API so it re-fetches from NCES/HCAD
+          const needsMigration = p.some(h => h.school?.ratingSource === "GreatSchools" || h.school?.nicheGrade || (h.appraisal && !h.appraisal.value) || (h.appraisal && h.appraisal.source !== "HCAD (Harris County Appraisal District)"));
+          if (needsMigration) {
+            const migrated = p.map(h => ({ ...h, school: null, appraisal: null }));
+            localStorage.setItem("cribs_homes", JSON.stringify(migrated));
+            return migrated;
           }
-          // Old data without enrichment - fall through to defaults
-          localStorage.removeItem("cribs_homes");
+          return p;
         }
       }
     } catch {}
@@ -4206,7 +4201,7 @@ export default function CribsApp() {
               <svg className="w-5 h-5" viewBox="0 0 24 24" fill="white"><path d="M12 3L2 12h3v8h5v-5h4v5h5v-8h3L12 3z"/></svg>
             </div>
             <h1 className="text-lg font-bold tracking-tight text-stone-800">CRIBS</h1>
-            <span className="text-[10px] text-stone-400 font-medium ml-1 self-end mb-0.5">v1.5.6</span>
+            <span className="text-[10px] text-stone-400 font-medium ml-1 self-end mb-0.5">v1.5.7</span>
           </button>
           <nav className="flex gap-1 bg-stone-100 rounded-lg p-0.5 border border-stone-200">
             <button onClick={goList} className={`px-4 py-2 text-sm font-medium rounded-md transition-colors ${screen === "list" || screen === "detail" ? "bg-white text-sky-600 shadow-sm" : "text-stone-500 hover:text-stone-700"}`}>Homes</button>
