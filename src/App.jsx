@@ -3751,11 +3751,11 @@ function SettingsScreen({ fin, updateFin, liveRate, rateInfo, homes = [], setHom
           <h3 className="text-sm font-semibold text-stone-700 mb-2">Clear Enrichment Data</h3>
           <p className="text-xs text-stone-400 mb-3">Strip flood, crime, school, parks, and grocery data from all homes. Data will re-fetch automatically on next load.</p>
           <div className="flex flex-wrap gap-2">
-            <button onClick={() => { if (window.confirm("Clear ALL enrichment data (flood, crime, school, parks, groceries) from every home?")) { const cleaned = homes.map(h => { const c = {...h}; delete c.flood; delete c.crime; delete c.school; delete c.parks; delete c.groceries; return c; }); setHomes(cleaned); window.location.reload(); } }}
+            <button onClick={() => { if (window.confirm("Clear ALL enrichment data (flood, crime, school, parks, groceries) from every home?")) { const cleaned = homes.map(h => { const c = {...h}; delete c.flood; delete c.crime; delete c.school; delete c.parks; delete c.groceries; return c; }); setHomes(cleaned); try { localStorage.setItem("cribs_homes", JSON.stringify(cleaned)); } catch {} window.location.reload(); } }}
               className="text-xs font-medium text-stone-600 hover:text-stone-800 bg-stone-50 hover:bg-stone-100 px-3 py-1.5 rounded-lg border border-stone-200 transition-colors">Clear All Enrichment</button>
-            <button onClick={() => { if (window.confirm("Clear parks data from all homes?")) { const cleaned = homes.map(h => { const c = {...h}; delete c.parks; return c; }); setHomes(cleaned); window.location.reload(); } }}
+            <button onClick={() => { if (window.confirm("Clear parks data from all homes?")) { const cleaned = homes.map(h => { const c = {...h}; delete c.parks; return c; }); setHomes(cleaned); try { localStorage.setItem("cribs_homes", JSON.stringify(cleaned)); } catch {} window.location.reload(); } }}
               className="text-xs font-medium text-teal-600 hover:text-teal-700 bg-teal-50 hover:bg-teal-100 px-3 py-1.5 rounded-lg border border-teal-200 transition-colors">Clear Parks</button>
-            <button onClick={() => { if (window.confirm("Clear grocery data from all homes?")) { const cleaned = homes.map(h => { const c = {...h}; delete c.groceries; return c; }); setHomes(cleaned); window.location.reload(); } }}
+            <button onClick={() => { if (window.confirm("Clear grocery data from all homes?")) { const cleaned = homes.map(h => { const c = {...h}; delete c.groceries; return c; }); setHomes(cleaned); try { localStorage.setItem("cribs_homes", JSON.stringify(cleaned)); } catch {} window.location.reload(); } }}
               className="text-xs font-medium text-orange-600 hover:text-orange-700 bg-orange-50 hover:bg-orange-100 px-3 py-1.5 rounded-lg border border-orange-200 transition-colors">Clear Groceries</button>
           </div>
         </div>
@@ -4201,7 +4201,7 @@ export default function CribsApp() {
               <svg className="w-5 h-5" viewBox="0 0 24 24" fill="white"><path d="M12 3L2 12h3v8h5v-5h4v5h5v-8h3L12 3z"/></svg>
             </div>
             <h1 className="text-lg font-bold tracking-tight text-stone-800">CRIBS</h1>
-            <span className="text-[10px] text-stone-400 font-medium ml-1 self-end mb-0.5">v1.5.7</span>
+            <span className="text-[10px] text-stone-400 font-medium ml-1 self-end mb-0.5">v1.5.8</span>
           </button>
           <nav className="flex gap-1 bg-stone-100 rounded-lg p-0.5 border border-stone-200">
             <button onClick={goList} className={`px-4 py-2 text-sm font-medium rounded-md transition-colors ${screen === "list" || screen === "detail" ? "bg-white text-sky-600 shadow-sm" : "text-stone-500 hover:text-stone-700"}`}>Homes</button>
