@@ -365,9 +365,108 @@ async function fetchSchool(address, city, state, zip, lat, lng) {
   return null;
 }
 
-function fetchNearbyParks(address, city, state, zip, lat, lng) {
-  // Pure static lookup — no API calls needed
-  return Promise.resolve(generateParks(lat, lng));
+async function fetchNearbyParks(address, city, state, zip, lat, lng) {
+  if (!lat || !lng) return generateParks(lat, lng);
+
+  // 1) Start with curated static parks
+  const staticResult = generateParks(lat, lng);
+  const staticParks = staticResult?.parks || [];
+  const seenNames = new Set(staticParks.map(p => p.name.toLowerCase()));
+
+  // 2) Supplement with Overpass — tight filters to exclude junk
+  try {
+    const radius = 2414; // 1.5 miles in meters
+    // Only ways/relations (areas) with leisure=park that have a name — skip nodes (usually POI pins, not real parks)
+    const query = `[out:json][timeout:8];(way["leisure"="park"]["name"](around:${radius},${lat},${lng});relation["leisure"="park"]["name"](around:${radius},${lat},${lng}););out center qt 60;`;
+    const res = await fetch("https://overpass-api.de/api/interpreter", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: "data=" + encodeURIComponent(query),
+      signal: AbortSignal.timeout(6000),
+    });
+    const data = await res.json();
+    if (data.elements && Array.isArray(data.elements)) {
+      // Junk name patterns to exclude
+      const junkPatterns = /apartment|condos?|townhome|residence|complex|hoa|courtyard|median|esplanade|office|plaza|shopping|center|commercial|industrial|retention|detention|easement/i;
+
+      for (const el of data.elements) {
+        const name = el.tags?.name;
+        if (!name || name.length < 3) continue;
+        if (junkPatterns.test(name)) continue;
+        // Skip if access is private
+        if (el.tags?.access === "private" || el.tags?.access === "no") continue;
+        // Skip unnamed leisure areas tagged inside residential
+        if (el.tags?.landuse === "residential") continue;
+
+        const elLat = el.center?.lat;
+        const elLng = el.center?.lon;
+        if (!elLat || !elLng) continue;
+
+        // Dedupe against static parks (fuzzy match)
+        const nameLower = name.toLowerCase();
+        if (seenNames.has(nameLower)) continue;
+        // Also check partial matches (e.g. "Memorial Park" vs "Memorial Park Trails")
+        let isDupe = false;
+        for (const sn of seenNames) {
+          if (nameLower.includes(sn) || sn.includes(nameLower)) { isDupe = true; break; }
+        }
+        if (isDupe) continue;
+
+        const dist = haversine(lat, lng, elLat, elLng);
+        if (dist > 3.1) continue;
+
+        seenNames.add(nameLower);
+
+        // Determine type from tags
+        let type = "Park";
+        const tags = el.tags || {};
+        if (tags.leisure === "nature_reserve") type = "Nature Preserve";
+        else if (tags.leisure === "garden" || tags.garden) type = "Garden";
+
+        // Estimate acres from way_area
+        let acres = null;
+        if (tags.way_area) acres = Math.round(parseFloat(tags.way_area) * 0.000247105 * 10) / 10;
+
+        // Extract amenities
+        const amenities = [];
+        if (tags.sport) amenities.push(...tags.sport.split(";").map(s => s.trim()));
+        if (tags.playground === "yes" || tags.leisure === "playground") amenities.push("Playground");
+        if (tags.dog === "yes" || tags.dogs === "yes") amenities.push("Dog park");
+        if (tags.lit === "yes") amenities.push("Lit paths");
+
+        staticParks.push({
+          name, lat: elLat, lng: elLng,
+          distanceMi: Math.round(dist * 100) / 100,
+          type, acres, amenities: [...new Set(amenities)].slice(0, 5),
+          source: "osm",
+        });
+      }
+    }
+  } catch (e) { /* Overpass failed — static results still available */ }
+
+  // 3) Re-sort and rebuild result
+  staticParks.sort((a, b) => a.distanceMi - b.distanceMi);
+  const top = staticParks.slice(0, 4);
+  const count = staticParks.length;
+  const nearest = top[0] || null;
+
+  let hasTrailFlag = false, hasPlaygroundFlag = false;
+  for (const p of staticParks) {
+    if (p.type === "Trail" || (p.amenities && p.amenities.some(a => a.toLowerCase().includes("trail")))) hasTrailFlag = true;
+    if (p.amenities && p.amenities.some(a => a.toLowerCase().includes("playground"))) hasPlaygroundFlag = true;
+  }
+
+  const score = count >= 4 ? "excellent" : count >= 2 ? "good" : count >= 1 ? "fair" : "poor";
+  return {
+    parks: top,
+    nearestParkName: nearest?.name || null,
+    nearestDistanceMi: nearest?.distanceMi ?? null,
+    parkCount1Mi: staticParks.filter(p => p.distanceMi <= 1.05).length,
+    hasTrail: hasTrailFlag,
+    hasPlayground: hasPlaygroundFlag,
+    greenSpaceScore: score,
+    notes: count > 0 ? `${count} parks within 3 miles. Nearest: ${nearest?.name} (${nearest?.distanceMi} mi).` : "No parks found within 3 miles.",
+  };
 }
 
 // Known Spring Branch / Memorial area parks for instant distance calc
@@ -4225,7 +4324,7 @@ export default function CribsApp() {
               <svg className="w-5 h-5" viewBox="0 0 24 24" fill="white"><path d="M12 3L2 12h3v8h5v-5h4v5h5v-8h3L12 3z"/></svg>
             </div>
             <h1 className="text-lg font-bold tracking-tight text-stone-800">CRIBS</h1>
-            <span className="text-[10px] text-stone-400 font-medium ml-1 self-end mb-0.5">v1.6.2</span>
+            <span className="text-[10px] text-stone-400 font-medium ml-1 self-end mb-0.5">v1.6.3</span>
           </button>
           <nav className="flex gap-1 bg-stone-100 rounded-lg p-0.5 border border-stone-200">
             <button onClick={goList} className={`px-4 py-2 text-sm font-medium rounded-md transition-colors ${screen === "list" || screen === "detail" ? "bg-white text-sky-600 shadow-sm" : "text-stone-500 hover:text-stone-700"}`}>Homes</button>
