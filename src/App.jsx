@@ -3568,7 +3568,7 @@ function TourPlannerScreen({ homes, onOpenHome, myHome }) {
                         )}
 
                         {/* Stop card */}
-                        <div className="bg-white border border-stone-200 rounded-2xl p-4 hover:border-stone-300 transition-all hover:shadow-sm group">
+                        <div className={`border rounded-2xl p-4 hover:border-stone-300 transition-all hover:shadow-sm group ${h.viewed ? "bg-stone-50/80 border-stone-200" : "bg-white border-stone-200"}`}>
                           <div className="flex gap-3">
                             {/* Stop number */}
                             <div className="flex flex-col items-center gap-1 flex-shrink-0">
@@ -3584,7 +3584,10 @@ function TourPlannerScreen({ homes, onOpenHome, myHome }) {
                             <div className="flex-1 min-w-0">
                               <div className="flex items-start justify-between gap-2">
                                 <div className="min-w-0">
-                                  <button onClick={() => onOpenHome(h.id)} className="text-base font-bold text-stone-800 hover:text-sky-600 transition-colors truncate block text-left">{h.address}</button>
+                                  <div className="flex items-center gap-1.5">
+                                    <button onClick={() => onOpenHome(h.id)} className="text-base font-bold text-stone-800 hover:text-sky-600 transition-colors truncate text-left">{h.address}</button>
+                                    {h.viewed && <svg className="w-4 h-4 text-stone-400 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>}
+                                  </div>
                                   <div className="text-xs text-stone-400 mt-0.5">{[h.city, h.zip].filter(Boolean).join(" ")}</div>
                                 </div>
                                 <button onClick={() => toggleHomeInDay(activeDayObj.key, h.id)} className="text-stone-300 hover:text-red-500 transition-colors p-1 flex-shrink-0" title="Remove stop">
@@ -3616,6 +3619,7 @@ function TourPlannerScreen({ homes, onOpenHome, myHome }) {
                                 {h.hoa > 0 && <span className="text-[10px] font-semibold text-stone-500 bg-stone-100 px-2 py-0.5 rounded-md">HOA ${h.hoa}/mo</span>}
                                 {h.dom != null && <span className="text-[10px] font-semibold text-stone-500 bg-stone-100 px-2 py-0.5 rounded-md">{h.dom}d on market</span>}
                                 {h.favorite && <span className="text-[10px] font-bold text-rose-600 bg-rose-50 border border-rose-200 px-2 py-0.5 rounded-md">♥ Favorite</span>}
+                                {h.viewed && <span className="text-[10px] font-semibold text-stone-500 bg-stone-100 border border-stone-200 px-2 py-0.5 rounded-md flex items-center gap-1"><svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>Viewed</span>}
                               </div>
 
                               {/* Inline notes */}
@@ -3649,13 +3653,16 @@ function TourPlannerScreen({ homes, onOpenHome, myHome }) {
                   <h4 className="text-xs font-bold text-stone-400 uppercase tracking-wider mb-2">Available Open Houses</h4>
                   <div className="grid gap-1.5">
                     {activeDayObj.ohHomes.filter(h => !(tourDays[activeDayObj.key] || []).includes(h.id)).map(h => (
-                      <div key={h.id} className="flex items-center gap-3 bg-white border border-stone-200 rounded-xl p-3 hover:border-emerald-300 transition-all">
+                      <div key={h.id} className={`flex items-center gap-3 border rounded-xl p-3 hover:border-emerald-300 transition-all ${h.viewed ? "bg-stone-50/80 border-stone-200" : "bg-white border-stone-200"}`}>
                         <button onClick={() => toggleHomeInDay(activeDayObj.key, h.id)}
                           className="w-6 h-6 rounded-lg border-2 border-emerald-300 hover:bg-emerald-500 hover:border-emerald-500 hover:text-white flex items-center justify-center flex-shrink-0 transition-all text-emerald-500">
                           <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5}><path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" /></svg>
                         </button>
                         <div className="flex-1 min-w-0">
-                          <button onClick={() => onOpenHome(h.id)} className="text-sm font-semibold text-stone-700 hover:text-sky-600 truncate block text-left">{h.address}</button>
+                          <div className="flex items-center gap-1.5">
+                            <button onClick={() => onOpenHome(h.id)} className="text-sm font-semibold text-stone-700 hover:text-sky-600 truncate text-left">{h.address}</button>
+                            {h.viewed && <svg className="w-3.5 h-3.5 text-stone-400 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>}
+                          </div>
                           <div className="flex items-center gap-2 mt-0.5 flex-wrap">
                             <span className="text-[10px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-1.5 py-0 rounded">{formatOHTime(h.ohStart)}{h.ohEnd ? " – " + formatOHTime(h.ohEnd) : ""}</span>
                             {h.beds && <span className="text-[10px] text-stone-400">{h.beds}bd/{h.baths}ba</span>}
@@ -3715,7 +3722,7 @@ function TourPlannerScreen({ homes, onOpenHome, myHome }) {
                   const hasOH = h.nextOpenHouseStart && parseOHDate(h.nextOpenHouseStart) >= todayStart;
                   const ohD = hasOH ? parseOHDate(h.nextOpenHouseStart) : null;
                   return (
-                    <div key={h.id} className={`rounded-xl p-2.5 border transition-all ${inDay ? "bg-sky-50 border-sky-200" : "bg-white border-stone-100 hover:border-stone-200 hover:bg-stone-50"}`}>
+                    <div key={h.id} className={`rounded-xl p-2.5 border transition-all ${inDay ? "bg-sky-50 border-sky-200" : h.viewed ? "bg-stone-50 border-stone-200" : "bg-white border-stone-100 hover:border-stone-200 hover:bg-stone-50"}`}>
                       <div className="flex items-start gap-2.5">
                         <button onClick={() => activeDayObj && toggleHomeInDay(activeDayObj.key, h.id)} disabled={!activeDayObj}
                           className={`w-5 h-5 mt-0.5 rounded border-2 flex items-center justify-center flex-shrink-0 transition-all ${inDay ? "bg-sky-500 border-sky-500 text-white" : "border-stone-300 hover:border-sky-400"} ${!activeDayObj ? "opacity-30" : ""}`}>
@@ -3724,7 +3731,10 @@ function TourPlannerScreen({ homes, onOpenHome, myHome }) {
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center justify-between gap-1">
                             <button onClick={() => onOpenHome(h.id)} className="text-xs font-bold text-stone-700 hover:text-sky-600 truncate text-left">{h.address}</button>
-                            {h.favorite && <span className="text-[10px] text-rose-500 flex-shrink-0">♥</span>}
+                            <div className="flex items-center gap-1 flex-shrink-0">
+                              {h.viewed && <svg className="w-3 h-3 text-stone-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>}
+                              {h.favorite && <span className="text-[10px] text-rose-500">♥</span>}
+                            </div>
                           </div>
                           <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
                             {h.price > 0 && <span className="text-[10px] font-bold text-stone-800">{fmtShort(h.price)}</span>}
@@ -4951,7 +4961,7 @@ export default function CribsApp() {
               <svg className="w-5 h-5" viewBox="0 0 24 24" fill="white"><path d="M12 3L2 12h3v8h5v-5h4v5h5v-8h3L12 3z"/></svg>
             </div>
             <h1 className="text-lg font-bold tracking-tight text-stone-800">CRIBS</h1>
-            <span className="text-[10px] text-stone-400 font-medium ml-1 self-end mb-0.5">v1.6.8</span>
+            <span className="text-[10px] text-stone-400 font-medium ml-1 self-end mb-0.5">v1.6.9</span>
           </button>
           <nav className="flex gap-1 bg-stone-100 rounded-lg p-0.5 border border-stone-200">
             <button onClick={goList} className={`px-4 py-2 text-sm font-medium rounded-md transition-colors ${screen === "list" || screen === "detail" ? "bg-white text-sky-600 shadow-sm" : "text-stone-500 hover:text-stone-700"}`}>Homes</button>
