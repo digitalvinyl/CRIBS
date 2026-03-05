@@ -46,6 +46,9 @@ const FIELD_MAP = {
   hoa: ["HOA/MONTH", "HOA"],
   propertyType: ["PROPERTY TYPE", "TYPE"],
   status: ["STATUS"],
+  soldDate: ["SOLD DATE"],
+  nextOpenHouseStart: ["NEXT OPEN HOUSE START TIME", "NEXT OPEN HOUSE DATE"],
+  nextOpenHouseEnd: ["NEXT OPEN HOUSE END TIME"],
   url: ["URL (SEE https://www.redfin.com/buy-a-home/comparative-market-analysis FOR INFO ON PRICING)", "URL", "REDFIN URL"],
   lat: ["LATITUDE", "LAT"],
   lng: ["LONGITUDE", "LNG", "LON", "LONG"],
@@ -1057,6 +1060,7 @@ function InputField({ label, value, onChange, type = "text", prefix, suffix }) {
 function StatusBadge({ status }) {
   if (!status) return null;
   const s = status.toLowerCase();
+  if (s.includes("sold")) return <span className="text-[10px] font-bold text-red-600 bg-red-50 border border-red-200 px-1.5 py-0.5 rounded-md uppercase tracking-wide">Sold</span>;
   if (s.includes("new")) return <span className="text-[10px] font-bold text-sky-600 bg-sky-50 border border-sky-200 px-1.5 py-0.5 rounded-md uppercase tracking-wide anim-pulse">New</span>;
   if (s.includes("drop") || s.includes("reduced")) return <span className="text-[10px] font-bold text-orange-600 bg-orange-50 border border-orange-200 px-1.5 py-0.5 rounded-md uppercase tracking-wide">Price Drop</span>;
   if (s.includes("pending") || s.includes("contingent")) return <span className="text-[10px] font-bold text-amber-600 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded-md uppercase tracking-wide">Pending</span>;
@@ -1270,6 +1274,9 @@ function HomeListScreen({ homes, setHomes, onOpenHome, compareList, toggleCompar
                     <div className="flex items-center gap-1.5 flex-wrap">
                       <p className="font-semibold text-stone-800 truncate text-[15px]">{h.address || "—"}</p>
                       <StatusBadge status={h.status} />
+                      {h.nextOpenHouseStart && parseOHDate(h.nextOpenHouseStart) >= new Date(new Date().getFullYear(), new Date().getMonth(), new Date().getDate()) && (
+                        <span className="text-[10px] font-bold text-emerald-600 bg-emerald-50 border border-emerald-200 px-1.5 py-0.5 rounded-md uppercase tracking-wide">Open House</span>
+                      )}
                     </div>
                     <p className="text-xs text-stone-400 mt-0.5">{[h.city, h.state, h.zip].filter(Boolean).join(", ")}</p>
                   </div>
@@ -2199,6 +2206,8 @@ function HomeDetailScreen({ home, onBack, onUpdate, onDelete, compareList, toggl
               ["Year Built", home.yearBuilt || "—"],
               ["Type", home.propertyType || "—"],
               ["Status", home.status || "—"],
+              ...(home.soldDate ? [["Sold Date", home.soldDate]] : []),
+              ...(home.nextOpenHouseStart ? [["Open House", (() => { const d = parseOHDate(home.nextOpenHouseStart); const e = parseOHDate(home.nextOpenHouseEnd); return d ? formatOHDate(d) + " " + formatOHTime(d) + (e ? " – " + formatOHTime(e) : "") : home.nextOpenHouseStart; })()]] : []),
               ["Days on Market", home.dom ?? "—"],
               ["HOA/Month", home.hoa ? fmt(home.hoa) : "None"],
               ["Lot Size", home.lotSize ? fmtNum(home.lotSize) + " sf" : "—"],
@@ -3197,6 +3206,228 @@ function HomeDetailScreen({ home, onBack, onUpdate, onDelete, compareList, toggl
 /* ═══════════════════════════════════════════════════════════════════
    SCREEN: Compare
    ═══════════════════════════════════════════════════════════════════ */
+/* ─── SCREEN: Open House Tour Planner ─────────────────── */
+
+function parseOHDate(str) {
+  if (!str) return null;
+  try {
+    // Try direct parse first (works for ISO format)
+    let d = new Date(str);
+    if (!isNaN(d.getTime())) return d;
+    // Redfin format: "Saturday, Mar 8, 2025 12:00pm" — strip day name prefix
+    const stripped = str.replace(/^(monday|tuesday|wednesday|thursday|friday|saturday|sunday),?\s*/i, "");
+    d = new Date(stripped);
+    if (!isNaN(d.getTime())) return d;
+    // Try replacing am/pm variants
+    const normalized = stripped.replace(/(\d)(am|pm)/i, "$1 $2");
+    d = new Date(normalized);
+    if (!isNaN(d.getTime())) return d;
+  } catch (e) {}
+  return null;
+}
+
+function formatOHTime(d) {
+  if (!d) return "";
+  return d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true });
+}
+
+function formatOHDate(d) {
+  if (!d) return "";
+  return d.toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric" });
+}
+
+function getDateKey(d) {
+  if (!d) return "";
+  return d.toLocaleDateString("en-US", { year: "numeric", month: "2-digit", day: "2-digit" });
+}
+
+function TourPlannerScreen({ homes, onOpenHome }) {
+  const [tourList, setTourList] = useState(() => {
+    try { return JSON.parse(localStorage.getItem("cribs_tour_list") || "[]"); } catch { return []; }
+  });
+  useEffect(() => { try { localStorage.setItem("cribs_tour_list", JSON.stringify(tourList)); } catch {} }, [tourList]);
+
+  const toggleTour = (id) => setTourList(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
+
+  // Collect all homes with open house data
+  const ohHomes = homes.filter(h => h.nextOpenHouseStart).map(h => {
+    const start = parseOHDate(h.nextOpenHouseStart);
+    const end = parseOHDate(h.nextOpenHouseEnd);
+    return { ...h, ohStart: start, ohEnd: end };
+  }).filter(h => h.ohStart).sort((a, b) => a.ohStart - b.ohStart);
+
+  // Separate into upcoming vs past
+  const now = new Date();
+  const todayKey = getDateKey(now);
+  const upcoming = ohHomes.filter(h => h.ohStart >= new Date(now.getFullYear(), now.getMonth(), now.getDate()));
+  const past = ohHomes.filter(h => h.ohStart < new Date(now.getFullYear(), now.getMonth(), now.getDate()));
+
+  // Group upcoming by date
+  const grouped = {};
+  for (const h of upcoming) {
+    const key = getDateKey(h.ohStart);
+    if (!grouped[key]) grouped[key] = { date: h.ohStart, homes: [] };
+    grouped[key].homes.push(h);
+  }
+  const days = Object.values(grouped).sort((a, b) => a.date - b.date);
+
+  // Tour plan — homes user has selected, in order
+  const tourHomes = tourList.map(id => ohHomes.find(h => h.id === id)).filter(Boolean);
+
+  // Calculate distances between consecutive tour stops
+  const tourDistances = [];
+  for (let i = 1; i < tourHomes.length; i++) {
+    if (tourHomes[i-1].lat && tourHomes[i].lat) {
+      tourDistances.push(haversine(tourHomes[i-1].lat, tourHomes[i-1].lng, tourHomes[i].lat, tourHomes[i].lng));
+    } else tourDistances.push(null);
+  }
+  const totalMiles = tourDistances.filter(Boolean).reduce((s, d) => s + d, 0);
+
+  // Homes with no open house but in tour list (manually added)
+  const manualHomes = homes.filter(h => !h.nextOpenHouseStart && tourList.includes(h.id));
+
+  return (
+    <div className="px-4 md:px-6 py-4 md:py-6 space-y-6 max-w-5xl mx-auto pb-28 md:pb-8">
+      {/* Header */}
+      <div className="anim-fade-up">
+        <h2 className="text-2xl font-bold text-stone-800 flex items-center gap-2">
+          <span className="text-2xl">🗓</span> Open House Tour Planner
+        </h2>
+        <p className="text-sm text-stone-500 mt-1">Plan your weekend open house route. Select homes to build your tour.</p>
+      </div>
+
+      {/* Tour Summary Card */}
+      {tourHomes.length > 0 && (
+        <div className="bg-gradient-to-r from-sky-50 to-violet-50 border border-sky-200 rounded-2xl p-5 anim-fade-up" style={{ animationDelay: "50ms" }}>
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="text-sm font-bold text-stone-700 uppercase tracking-wider flex items-center gap-2">
+              <span className="text-lg">🚗</span> Your Tour Plan
+            </h3>
+            <div className="flex items-center gap-3">
+              {totalMiles > 0 && <span className="text-xs font-semibold text-sky-600 bg-sky-100 px-2.5 py-1 rounded-full">~{totalMiles.toFixed(1)} mi total</span>}
+              <span className="text-xs font-semibold text-violet-600 bg-violet-100 px-2.5 py-1 rounded-full">{tourHomes.length} stop{tourHomes.length !== 1 ? "s" : ""}</span>
+            </div>
+          </div>
+          <div className="space-y-2">
+            {tourHomes.map((h, i) => (
+              <div key={h.id} className="flex items-center gap-3 bg-white/80 rounded-xl p-3 border border-white">
+                <div className="w-7 h-7 rounded-full bg-sky-500 text-white flex items-center justify-center text-xs font-bold flex-shrink-0">{i + 1}</div>
+                <div className="flex-1 min-w-0">
+                  <button onClick={() => onOpenHome(h.id)} className="text-sm font-semibold text-stone-800 hover:text-sky-600 truncate block text-left">{h.address}</button>
+                  <div className="text-xs text-stone-500">
+                    {h.ohStart ? formatOHTime(h.ohStart) : "No time set"}
+                    {h.ohEnd ? " – " + formatOHTime(h.ohEnd) : ""}
+                    {h.price ? " · $" + h.price.toLocaleString() : ""}
+                  </div>
+                </div>
+                {i > 0 && tourDistances[i-1] != null && (
+                  <span className="text-[10px] text-stone-400 flex-shrink-0">{tourDistances[i-1].toFixed(1)} mi</span>
+                )}
+                <button onClick={() => toggleTour(h.id)} className="text-stone-400 hover:text-red-500 transition-colors flex-shrink-0 p-1" title="Remove from tour">✕</button>
+              </div>
+            ))}
+          </div>
+          <button onClick={() => setTourList([])} className="mt-3 text-xs text-stone-400 hover:text-red-500 transition-colors">Clear tour</button>
+        </div>
+      )}
+
+      {/* Upcoming Open Houses by Day */}
+      {days.length > 0 ? days.map((day, di) => {
+        const dayLabel = formatOHDate(day.date);
+        const isToday = getDateKey(day.date) === todayKey;
+        const tomorrow = new Date(now); tomorrow.setDate(tomorrow.getDate() + 1);
+        const isTomorrow = getDateKey(day.date) === getDateKey(tomorrow);
+        const tag = isToday ? "Today" : isTomorrow ? "Tomorrow" : null;
+        // Check if it's this weekend
+        const dayOfWeek = day.date.getDay();
+        const isWeekend = dayOfWeek === 0 || dayOfWeek === 6;
+        const daysAway = Math.ceil((day.date - new Date(now.getFullYear(), now.getMonth(), now.getDate())) / 86400000);
+        const isThisWeekend = isWeekend && daysAway <= 7;
+        const isNextWeekend = isWeekend && daysAway > 7 && daysAway <= 14;
+
+        return (
+          <div key={di} className="anim-fade-up" style={{ animationDelay: `${100 + di * 60}ms` }}>
+            <div className="flex items-center gap-2 mb-3">
+              <h3 className="text-base font-bold text-stone-800">{dayLabel}</h3>
+              {tag && <span className="text-[10px] font-bold text-sky-600 bg-sky-100 px-2 py-0.5 rounded-full uppercase">{tag}</span>}
+              {!tag && isThisWeekend && <span className="text-[10px] font-bold text-emerald-600 bg-emerald-100 px-2 py-0.5 rounded-full uppercase">This Weekend</span>}
+              {!tag && isNextWeekend && <span className="text-[10px] font-bold text-amber-600 bg-amber-100 px-2 py-0.5 rounded-full uppercase">Next Weekend</span>}
+              <span className="text-xs text-stone-400">{day.homes.length} open house{day.homes.length !== 1 ? "s" : ""}</span>
+            </div>
+            <div className="grid gap-2">
+              {day.homes.map(h => {
+                const inTour = tourList.includes(h.id);
+                return (
+                  <div key={h.id} className={`flex items-center gap-3 rounded-xl p-3.5 border transition-all ${inTour ? "bg-sky-50 border-sky-300 shadow-sm" : "bg-white border-stone-200 hover:border-stone-300"}`}>
+                    <button onClick={() => toggleTour(h.id)}
+                      className={`w-6 h-6 rounded-lg border-2 flex items-center justify-center flex-shrink-0 transition-all ${inTour ? "bg-sky-500 border-sky-500 text-white" : "border-stone-300 hover:border-sky-400"}`}>
+                      {inTour && <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={3}><path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" /></svg>}
+                    </button>
+                    <div className="flex-1 min-w-0">
+                      <button onClick={() => onOpenHome(h.id)} className="text-sm font-semibold text-stone-800 hover:text-sky-600 truncate block text-left">{h.address}</button>
+                      <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+                        <span className="text-xs font-medium text-sky-600 bg-sky-100/60 px-1.5 py-0.5 rounded">
+                          {formatOHTime(h.ohStart)}{h.ohEnd ? " – " + formatOHTime(h.ohEnd) : ""}
+                        </span>
+                        {h.city && <span className="text-xs text-stone-400">{h.city}</span>}
+                      </div>
+                    </div>
+                    <div className="text-right flex-shrink-0">
+                      {h.price > 0 && <div className="text-sm font-bold text-stone-800">${(h.price / 1000).toFixed(0)}K</div>}
+                      <div className="text-[10px] text-stone-400">{h.beds}/{h.baths} · {h.sqft ? h.sqft.toLocaleString() + "sf" : ""}</div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        );
+      }) : (
+        <div className="bg-stone-50 border border-dashed border-stone-200 rounded-2xl p-8 text-center anim-fade-up" style={{ animationDelay: "100ms" }}>
+          <span className="text-4xl block mb-3">🏡</span>
+          <p className="text-stone-600 font-medium mb-1">No upcoming open houses found</p>
+          <p className="text-sm text-stone-400 max-w-md mx-auto">Open house dates come from Redfin CSV imports. Make sure your export is recent — Redfin includes the "Next Open House Start Time" and "Next Open House End Time" columns when available.</p>
+        </div>
+      )}
+
+      {/* All homes without open house — can manually add to tour */}
+      {upcoming.length > 0 && (
+        <div className="anim-fade-up" style={{ animationDelay: "300ms" }}>
+          <details className="group">
+            <summary className="text-sm font-semibold text-stone-500 cursor-pointer hover:text-stone-700 transition-colors list-none flex items-center gap-1">
+              <svg className="w-4 h-4 transition-transform group-open:rotate-90" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" /></svg>
+              Add homes without listed open houses
+            </summary>
+            <div className="mt-2 grid gap-1.5 max-h-60 overflow-y-auto">
+              {homes.filter(h => !h.nextOpenHouseStart && !(h.status && h.status.toLowerCase().includes("sold"))).map(h => {
+                const inTour = tourList.includes(h.id);
+                return (
+                  <div key={h.id} className={`flex items-center gap-3 rounded-lg p-2.5 border transition-all ${inTour ? "bg-sky-50 border-sky-300" : "bg-white border-stone-100 hover:border-stone-200"}`}>
+                    <button onClick={() => toggleTour(h.id)}
+                      className={`w-5 h-5 rounded border-2 flex items-center justify-center flex-shrink-0 transition-all ${inTour ? "bg-sky-500 border-sky-500 text-white" : "border-stone-300 hover:border-sky-400"}`}>
+                      {inTour && <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={3}><path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" /></svg>}
+                    </button>
+                    <button onClick={() => onOpenHome(h.id)} className="text-xs font-medium text-stone-700 hover:text-sky-600 truncate flex-1 text-left">{h.address}</button>
+                    {h.price > 0 && <span className="text-xs font-semibold text-stone-500 flex-shrink-0">${(h.price / 1000).toFixed(0)}K</span>}
+                  </div>
+                );
+              })}
+            </div>
+          </details>
+        </div>
+      )}
+
+      {/* Stats footer */}
+      <div className="text-xs text-stone-400 pt-2 border-t border-stone-100 anim-fade-up" style={{ animationDelay: "400ms" }}>
+        {upcoming.length} upcoming open house{upcoming.length !== 1 ? "s" : ""} across {days.length} day{days.length !== 1 ? "s" : ""}
+        {homes.filter(h => h.status && h.status.toLowerCase().includes("sold")).length > 0 && (
+          <span> · {homes.filter(h => h.status && h.status.toLowerCase().includes("sold")).length} sold properties in your list</span>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function CompareScreen({ homes, compareList, toggleCompare, clearCompare, onOpenHome, fin }) {
   const [compareFilter, setCompareFilter] = useState("all");
   const selected = compareList.map((id) => homes.find((h) => h.id === id)).filter(Boolean).slice(0, 2);
@@ -4242,7 +4473,7 @@ export default function CribsApp() {
         const existing = byAddr.get(key);
         if (existing) {
           const idx = merged.findIndex((h) => h.id === existing.id);
-          if (idx !== -1) merged[idx] = { ...existing, price: incoming.price ?? existing.price, beds: incoming.beds ?? existing.beds, baths: incoming.baths ?? existing.baths, sqft: incoming.sqft ?? existing.sqft, lotSize: incoming.lotSize ?? existing.lotSize, yearBuilt: incoming.yearBuilt ?? existing.yearBuilt, dom: incoming.dom ?? existing.dom, ppsf: incoming.ppsf ?? existing.ppsf, hoa: incoming.hoa ?? existing.hoa, propertyType: incoming.propertyType || existing.propertyType, status: incoming.status || existing.status, url: incoming.url || existing.url, city: incoming.city || existing.city, state: incoming.state || existing.state, zip: incoming.zip || existing.zip, address: incoming.address || existing.address, ...(markFavorites ? { favorite: true } : {}) };
+          if (idx !== -1) merged[idx] = { ...existing, price: incoming.price ?? existing.price, beds: incoming.beds ?? existing.beds, baths: incoming.baths ?? existing.baths, sqft: incoming.sqft ?? existing.sqft, lotSize: incoming.lotSize ?? existing.lotSize, yearBuilt: incoming.yearBuilt ?? existing.yearBuilt, dom: incoming.dom ?? existing.dom, ppsf: incoming.ppsf ?? existing.ppsf, hoa: incoming.hoa ?? existing.hoa, propertyType: incoming.propertyType || existing.propertyType, status: incoming.status || existing.status, soldDate: incoming.soldDate || existing.soldDate, nextOpenHouseStart: incoming.nextOpenHouseStart || existing.nextOpenHouseStart, nextOpenHouseEnd: incoming.nextOpenHouseEnd || existing.nextOpenHouseEnd, url: incoming.url || existing.url, city: incoming.city || existing.city, state: incoming.state || existing.state, zip: incoming.zip || existing.zip, address: incoming.address || existing.address, ...(markFavorites ? { favorite: true } : {}) };
         }
       }
       for (const h of newList) { merged.push(restoreUserData(markFavorites ? { ...h, favorite: true } : h)); }
@@ -4324,10 +4555,13 @@ export default function CribsApp() {
               <svg className="w-5 h-5" viewBox="0 0 24 24" fill="white"><path d="M12 3L2 12h3v8h5v-5h4v5h5v-8h3L12 3z"/></svg>
             </div>
             <h1 className="text-lg font-bold tracking-tight text-stone-800">CRIBS</h1>
-            <span className="text-[10px] text-stone-400 font-medium ml-1 self-end mb-0.5">v1.6.3</span>
+            <span className="text-[10px] text-stone-400 font-medium ml-1 self-end mb-0.5">v1.6.4</span>
           </button>
           <nav className="flex gap-1 bg-stone-100 rounded-lg p-0.5 border border-stone-200">
             <button onClick={goList} className={`px-4 py-2 text-sm font-medium rounded-md transition-colors ${screen === "list" || screen === "detail" ? "bg-white text-sky-600 shadow-sm" : "text-stone-500 hover:text-stone-700"}`}>Homes</button>
+            <button onClick={() => setScreen("tours")} className={`px-4 py-2 text-sm font-medium rounded-md transition-colors ${screen === "tours" ? "bg-white text-sky-600 shadow-sm" : "text-stone-500 hover:text-stone-700"}`}>
+              Tours {(() => { const ct = homes.filter(h => h.nextOpenHouseStart && parseOHDate(h.nextOpenHouseStart) >= new Date(new Date().getFullYear(), new Date().getMonth(), new Date().getDate())).length; return ct > 0 ? <span className="ml-1 bg-emerald-100 text-emerald-600 text-xs px-1.5 py-0.5 rounded-full font-semibold">{ct}</span> : null; })()}
+            </button>
             <button onClick={() => setScreen("compare")} className={`px-4 py-2 text-sm font-medium rounded-md transition-colors ${screen === "compare" ? "bg-white text-sky-600 shadow-sm" : "text-stone-500 hover:text-stone-700"}`}>
               Compare {compareList.length > 0 && <span className="ml-1 bg-violet-100 text-violet-600 text-xs px-1.5 py-0.5 rounded-full font-semibold">{compareList.length}</span>}
             </button>
@@ -4341,6 +4575,7 @@ export default function CribsApp() {
         {screen === "list" && <HomeListScreen homes={homes} setHomes={setHomes} onOpenHome={openHome} compareList={compareList} toggleCompare={toggleCompare} onImport={handleImport} fin={fin} rateInfo={rateInfo} schoolFilter={schoolFilter} setSchoolFilter={setSchoolFilter} maxBudget={maxBudget} enrichDone={enrichDone} enrichProgress={enrichProgress} />}
         {screen === "detail" && activeHome && <ErrorBoundary><HomeDetailScreen home={activeHome} onBack={goList} onUpdate={updateHome} onDelete={(id) => { const found = homes.find(x => x.id === id); if (found) trackDeletion(found.address); setHomes((p) => p.filter((x) => x.id !== id)); }} compareList={compareList} toggleCompare={toggleCompare} fin={fin} navList={navList} onNavigate={navigateHome} allHomes={homes} soldComps={soldComps} onFilterBySchool={(name) => { setSchoolFilter(name); setScreen("list"); }} maxBudget={maxBudget} /></ErrorBoundary>}
         {screen === "compare" && <CompareScreen homes={homes} compareList={compareList} toggleCompare={toggleCompare} clearCompare={() => setCompareList([])} onOpenHome={openHome} fin={fin} />}
+        {screen === "tours" && <TourPlannerScreen homes={homes} onOpenHome={openHome} />}
         {screen === "settings" && <SettingsScreen fin={fin} updateFin={updateFin} liveRate={liveRate} rateInfo={rateInfo} homes={homes} setHomes={setHomes} soldComps={soldComps} setSoldComps={setSoldComps} darkMode={darkMode} setDarkMode={setDarkMode} onTriggerEnrich={() => { enrichingRef.current = false; setEnrichDone(false); setEnrichProgress({ done: 0, total: 0 }); setEnrichTrigger(t => t + 1); }} enrichDone={enrichDone} />}
       </div>
 
@@ -4395,6 +4630,7 @@ export default function CribsApp() {
         <div className="flex">
           {[
             { id: "list", label: "Homes", icon: <HomeIcon className="w-5 h-5" /> },
+            { id: "tours", label: "Tours", icon: <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}><rect x="3" y="4" width="18" height="18" rx="2" /><path d="M16 2v4M8 2v4M3 10h18M8 14h.01M12 14h.01M16 14h.01M8 18h.01M12 18h.01" /></svg>, badge: homes.filter(h => h.nextOpenHouseStart && parseOHDate(h.nextOpenHouseStart) >= new Date(new Date().getFullYear(), new Date().getMonth(), new Date().getDate())).length || 0 },
             { id: "compare", label: "Compare", icon: <CompareIcon className="w-5 h-5" />, badge: compareList.length },
             { id: "settings", label: "Settings", icon: <SettingsIcon className="w-5 h-5" /> },
           ].map((tab) => (
