@@ -4060,6 +4060,63 @@ function CompareScreen({ homes, compareList, toggleCompare, clearCompare, onOpen
 /* ═══════════════════════════════════════════════════════════════════
    SCREEN: Settings
    ═══════════════════════════════════════════════════════════════════ */
+function MyHomeEditor({ fin, updateFin }) {
+  const [myAddr, setMyAddr] = useState(fin.myHome?.address || "407 Detering Street, Houston, TX 77007");
+  const [myLat, setMyLat] = useState(fin.myHome?.lat ?? 29.7663);
+  const [myLng, setMyLng] = useState(fin.myHome?.lng ?? -95.4165);
+  const [geoStatus, setGeoStatus] = useState(null);
+  const saveMyHome = (addr, lat, lng) => updateFin({ myHome: { address: addr, lat, lng } });
+  return (
+    <div className="bg-white border border-stone-200 rounded-2xl p-4 anim-fade-up" style={{ animationDelay: '270ms' }}>
+      <h3 className="text-sm font-semibold text-stone-700 mb-1">My Home Address</h3>
+      <p className="text-xs text-stone-400 mb-3">Starting point for tour route planning and distance calculations.</p>
+      <div className="space-y-2">
+        <input
+          type="text"
+          value={myAddr}
+          onChange={(e) => { setMyAddr(e.target.value); saveMyHome(e.target.value, myLat, myLng); }}
+          placeholder="Enter your home address"
+          className="w-full text-sm text-stone-700 bg-stone-50 border border-stone-200 rounded-lg px-3 py-2.5 focus:outline-none focus:border-sky-400 focus:ring-2 focus:ring-sky-100"
+        />
+        <div className="grid grid-cols-2 gap-2">
+          <div>
+            <label className="text-[10px] text-stone-400 uppercase tracking-wider font-semibold">Latitude</label>
+            <input type="number" step="0.0001" value={myLat || ""} onChange={(e) => { const v = parseFloat(e.target.value) || null; setMyLat(v); saveMyHome(myAddr, v, myLng); }}
+              className="w-full text-xs text-stone-600 bg-stone-50 border border-stone-200 rounded-lg px-3 py-2 focus:outline-none focus:border-sky-400" />
+          </div>
+          <div>
+            <label className="text-[10px] text-stone-400 uppercase tracking-wider font-semibold">Longitude</label>
+            <input type="number" step="0.0001" value={myLng || ""} onChange={(e) => { const v = parseFloat(e.target.value) || null; setMyLng(v); saveMyHome(myAddr, myLat, v); }}
+              className="w-full text-xs text-stone-600 bg-stone-50 border border-stone-200 rounded-lg px-3 py-2 focus:outline-none focus:border-sky-400" />
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          <button onClick={() => {
+            if (!myAddr) { setGeoStatus("Enter an address first"); return; }
+            setGeoStatus("Looking up...");
+            const q = encodeURIComponent(myAddr);
+            fetch("https://nominatim.openstreetmap.org/search?q=" + q + "&format=json&limit=1", { headers: { "User-Agent": "CRIBSApp/1.0" } })
+              .then(r => r.json())
+              .then(data => {
+                if (data && data[0]) {
+                  const lat = parseFloat(data[0].lat);
+                  const lng = parseFloat(data[0].lon);
+                  setMyLat(lat); setMyLng(lng);
+                  saveMyHome(myAddr, lat, lng);
+                  setGeoStatus("Found: " + lat.toFixed(4) + ", " + lng.toFixed(4));
+                } else { setGeoStatus("Address not found"); }
+              })
+              .catch(() => setGeoStatus("Geocode failed"));
+          }} className="text-xs font-medium text-sky-600 hover:text-sky-700 bg-sky-50 border border-sky-200 rounded-lg px-3 py-1.5 hover:bg-sky-100 transition-colors">
+            Geocode from address
+          </button>
+          {geoStatus && <span className="text-xs text-stone-500">{geoStatus}</span>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function SettingsScreen({ fin, updateFin, liveRate, rateInfo, homes = [], setHomes, soldComps = [], setSoldComps, darkMode, setDarkMode, onTriggerEnrich, enrichDone }) {
   const fileRef = useRef();
   const handleSoldFile = async (file) => {
@@ -4213,36 +4270,7 @@ function SettingsScreen({ fin, updateFin, liveRate, rateInfo, homes = [], setHom
         </div>
 
         {/* My Home Address */}
-        <div className="bg-white border border-stone-200 rounded-2xl p-4 anim-fade-up" style={{ animationDelay: '270ms' }}>
-          <h3 className="text-sm font-semibold text-stone-700 mb-1">My Home Address</h3>
-          <p className="text-xs text-stone-400 mb-3">Starting point for tour route planning and distance calculations.</p>
-          <div className="space-y-2">
-            <input type="text" value={fin.myHome?.address || ""} onChange={(e) => updateFin({ myHome: { ...fin.myHome, address: e.target.value } })} placeholder="407 Detering Street, Houston, TX 77007"
-              className="w-full text-sm text-stone-700 bg-stone-50 border border-stone-200 rounded-lg px-3 py-2.5 focus:outline-none focus:border-sky-400 focus:ring-2 focus:ring-sky-100" />
-            <div className="grid grid-cols-2 gap-2">
-              <div>
-                <label className="text-[10px] text-stone-400 uppercase tracking-wider font-semibold">Latitude</label>
-                <input type="number" step="0.0001" value={fin.myHome?.lat || ""} onChange={(e) => updateFin({ myHome: { ...fin.myHome, lat: parseFloat(e.target.value) || null } })}
-                  className="w-full text-xs text-stone-600 bg-stone-50 border border-stone-200 rounded-lg px-3 py-2 focus:outline-none focus:border-sky-400" />
-              </div>
-              <div>
-                <label className="text-[10px] text-stone-400 uppercase tracking-wider font-semibold">Longitude</label>
-                <input type="number" step="0.0001" value={fin.myHome?.lng || ""} onChange={(e) => updateFin({ myHome: { ...fin.myHome, lng: parseFloat(e.target.value) || null } })}
-                  className="w-full text-xs text-stone-600 bg-stone-50 border border-stone-200 rounded-lg px-3 py-2 focus:outline-none focus:border-sky-400" />
-              </div>
-            </div>
-            <button onClick={async () => {
-              const addr = fin.myHome?.address;
-              if (!addr) return;
-              try {
-                const q = encodeURIComponent(addr);
-                const res = await fetch("https://nominatim.openstreetmap.org/search?q=" + q + "&format=json&limit=1", { headers: { "User-Agent": "CRIBSApp/1.0" }, signal: AbortSignal.timeout(6000) });
-                const data = await res.json();
-                if (data?.[0]) updateFin({ myHome: { ...fin.myHome, lat: parseFloat(data[0].lat), lng: parseFloat(data[0].lon) } });
-              } catch {}
-            }} className="text-xs text-sky-600 font-medium hover:text-sky-700">Geocode from address →</button>
-          </div>
-        </div>
+        <MyHomeEditor fin={fin} updateFin={updateFin} />
 
         {/* Key Locations */}
         <div className="bg-white border border-stone-200 rounded-2xl p-4 anim-fade-up" style={{ animationDelay: '280ms' }}>
@@ -4624,11 +4652,12 @@ export default function CribsApp() {
   const [liveRate, setLiveRate] = useState(DEFAULT_RATE);
   const [rateInfo, setRateInfo] = useState({ loading: true, source: null, asOf: null });
   const [fin, setFin] = useState(() => {
-    try { const s = localStorage.getItem("cribs_fin"); if (s) return JSON.parse(s); } catch {}
+    const defaults = { myHome: { address: "407 Detering Street, Houston, TX 77007", lat: 29.7663, lng: -95.4165 } };
+    try { const s = localStorage.getItem("cribs_fin"); if (s) { const parsed = JSON.parse(s); return { ...defaults, ...parsed }; } } catch {}
     return { cash: 750000, rate: DEFAULT_RATE, term: 30, propTax: 1.8, insurance: 3600, closing: 2.5, appreciation: 3, projYears: 10, grossIncome: 0, monthlyDebts: 0, dtiLimit: 36, places: [
     { label: "Work", address: "2322 W Grand Pkwy N, Katy, TX", lat: 29.8335, lng: -95.7675, icon: "briefcase" },
     { label: "Mom's House", address: "16015 Beechnut St, Houston, TX", lat: 29.6880, lng: -95.5810, icon: "heart" },
-  ], myHome: { address: "407 Detering Street, Houston, TX 77007", lat: 29.7663, lng: -95.4165 } };
+  ], ...defaults };
   });
   const updateFin = (updates) => setFin((prev) => {
     const next = { ...prev, ...updates };
@@ -4867,7 +4896,7 @@ export default function CribsApp() {
               <svg className="w-5 h-5" viewBox="0 0 24 24" fill="white"><path d="M12 3L2 12h3v8h5v-5h4v5h5v-8h3L12 3z"/></svg>
             </div>
             <h1 className="text-lg font-bold tracking-tight text-stone-800">CRIBS</h1>
-            <span className="text-[10px] text-stone-400 font-medium ml-1 self-end mb-0.5">v1.6.6</span>
+            <span className="text-[10px] text-stone-400 font-medium ml-1 self-end mb-0.5">v1.6.7</span>
           </button>
           <nav className="flex gap-1 bg-stone-100 rounded-lg p-0.5 border border-stone-200">
             <button onClick={goList} className={`px-4 py-2 text-sm font-medium rounded-md transition-colors ${screen === "list" || screen === "detail" ? "bg-white text-sky-600 shadow-sm" : "text-stone-500 hover:text-stone-700"}`}>Homes</button>
