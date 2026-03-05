@@ -3246,7 +3246,50 @@ function optimizeRoute(stops) {
 // Estimate drive time (Houston traffic: ~25mph avg)
 function estDriveMin(miles) { return Math.round(miles / 25 * 60); }
 
-function TourPlannerScreen({ homes, onOpenHome }) {
+function TourRouteMap({ stops, myHome, dayKey }) {
+  const ref = useRef(null);
+  const mapRef = useRef(null);
+  const stopsKey = stops.map(h => h.id).join(",") + (myHome?.lat || "");
+  useEffect(() => {
+    if (!ref.current) return;
+    if (mapRef.current) { mapRef.current.remove(); mapRef.current = null; }
+    const allPts = [];
+    if (myHome?.lat) allPts.push([myHome.lat, myHome.lng]);
+    stops.forEach(h => { if (h.lat) allPts.push([h.lat, h.lng]); });
+    if (allPts.length === 0) return;
+    const L = window.L;
+    if (!L) return;
+    const map = L.map(ref.current, { zoomControl: false, attributionControl: false }).fitBounds(allPts, { padding: [35, 35] });
+    L.tileLayer("https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png", { maxZoom: 19 }).addTo(map);
+    mapRef.current = map;
+    // Home marker
+    if (myHome?.lat) {
+      L.marker([myHome.lat, myHome.lng], {
+        icon: L.divIcon({ className: "", html: '<div style="width:30px;height:30px;border-radius:50%;background:linear-gradient(135deg,#8b5cf6,#a855f7);display:flex;align-items:center;justify-content:center;color:white;font-size:15px;box-shadow:0 2px 8px rgba(139,92,246,0.5);border:2.5px solid white;">🏠</div>', iconSize: [30, 30], iconAnchor: [15, 15] })
+      }).addTo(map).bindPopup("<b>Home</b><br/>" + (myHome.address || "Starting point"));
+    }
+    // Stop markers with numbered pins
+    const colors = ["#0ea5e9", "#8b5cf6", "#10b981", "#f59e0b", "#f43f5e", "#6366f1", "#14b8a6", "#f97316"];
+    stops.forEach((h, i) => {
+      if (!h.lat) return;
+      const color = colors[i % colors.length];
+      L.marker([h.lat, h.lng], {
+        icon: L.divIcon({ className: "", html: '<div style="width:28px;height:28px;border-radius:50%;background:' + color + ';display:flex;align-items:center;justify-content:center;color:white;font-size:13px;font-weight:bold;box-shadow:0 2px 6px rgba(0,0,0,0.3);border:2.5px solid white;">' + (i + 1) + '</div>', iconSize: [28, 28], iconAnchor: [14, 14] })
+      }).addTo(map).bindPopup("<b>" + (i + 1) + ". " + h.address + "</b>" + (h.ohStart ? "<br/>" + formatOHTime(h.ohStart) + (h.ohEnd ? " – " + formatOHTime(h.ohEnd) : "") : "") + (h.price ? "<br/>$" + h.price.toLocaleString() : ""));
+    });
+    // Route polyline
+    const routePts = [];
+    if (myHome?.lat) routePts.push([myHome.lat, myHome.lng]);
+    stops.forEach(h => { if (h.lat) routePts.push([h.lat, h.lng]); });
+    if (routePts.length >= 2) {
+      L.polyline(routePts, { color: "#0ea5e9", weight: 3, opacity: 0.6, dashArray: "8 6" }).addTo(map);
+    }
+    return () => { if (mapRef.current) { mapRef.current.remove(); mapRef.current = null; } };
+  }, [dayKey, stopsKey]);
+  return <div className="bg-white border border-stone-200 rounded-2xl overflow-hidden mb-4" style={{ height: 260 }}><div ref={ref} style={{ width: "100%", height: "100%" }} /></div>;
+}
+
+function TourPlannerScreen({ homes, onOpenHome, myHome }) {
   const [tourDays, setTourDays] = useState(() => {
     try { return JSON.parse(localStorage.getItem("cribs_tour_days") || "{}"); } catch { return {}; }
   });
@@ -3350,9 +3393,14 @@ function TourPlannerScreen({ homes, onOpenHome }) {
     return null;
   };
 
-  // Route distances for active day
+  // Route distances for active day (including home -> first stop)
   const activeStops = activeDayObj?.tourStops || [];
   const routeLegs = [];
+  // Home to first stop
+  if (myHome?.lat && activeStops.length > 0 && activeStops[0].lat) {
+    const mi = haversine(myHome.lat, myHome.lng, activeStops[0].lat, activeStops[0].lng);
+    routeLegs.push({ miles: mi, minutes: estDriveMin(mi), fromHome: true });
+  }
   for (let i = 1; i < activeStops.length; i++) {
     const a = activeStops[i-1], b = activeStops[i];
     if (a.lat && b.lat) {
@@ -3451,6 +3499,11 @@ function TourPlannerScreen({ homes, onOpenHome }) {
                 )}
               </div>
 
+              {/* Tour Route Map */}
+              {activeStops.length > 0 && activeStops.some(h => h.lat) && (
+                <TourRouteMap stops={activeStops} myHome={myHome} dayKey={activeDayObj?.key} />
+              )}
+
               {/* Tour stops */}
               {activeStops.length > 0 ? (
                 <div className="space-y-0">
@@ -3458,15 +3511,20 @@ function TourPlannerScreen({ homes, onOpenHome }) {
                     const color = stopColors[i % stopColors.length];
                     const note = tourNotes[h.id] || "";
                     const school = h.school;
+                    // Leg index: if myHome exists, legs are [home->0, 0->1, 1->2, ...] so leg before stop i is routeLegs[i]
+                    // If no myHome, legs are [0->1, 1->2, ...] so leg before stop i (for i>0) is routeLegs[i-1]
+                    const hasHomeLeg = myHome?.lat && routeLegs[0]?.fromHome;
+                    const legIdx = hasHomeLeg ? i : i - 1;
+                    const leg = legIdx >= 0 ? routeLegs[legIdx] : null;
                     return (
                       <div key={h.id}>
                         {/* Drive leg between stops */}
-                        {i > 0 && routeLegs[i-1] && (
+                        {leg && (i > 0 || leg.fromHome) && (
                           <div className="flex items-center gap-2 py-2 pl-3.5">
                             <div className="w-7 flex justify-center"><div className="w-0.5 h-6 bg-stone-200 rounded-full" /></div>
                             <div className="flex items-center gap-1.5 text-[10px] text-stone-400 font-medium">
                               <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M5 12h14M12 5l7 7-7 7" /></svg>
-                              {routeLegs[i-1].miles.toFixed(1)} mi · ~{routeLegs[i-1].minutes} min drive
+                              {leg.fromHome ? "From home: " : ""}{leg.miles.toFixed(1)} mi · ~{leg.minutes} min drive
                             </div>
                           </div>
                         )}
@@ -4154,6 +4212,38 @@ function SettingsScreen({ fin, updateFin, liveRate, rateInfo, homes = [], setHom
           <p className="text-xs text-stone-400 mt-1">The 30yr fixed rate is fetched from Freddie Mac on app load and used as the default interest rate.</p>
         </div>
 
+        {/* My Home Address */}
+        <div className="bg-white border border-stone-200 rounded-2xl p-4 anim-fade-up" style={{ animationDelay: '270ms' }}>
+          <h3 className="text-sm font-semibold text-stone-700 mb-1">My Home Address</h3>
+          <p className="text-xs text-stone-400 mb-3">Starting point for tour route planning and distance calculations.</p>
+          <div className="space-y-2">
+            <input type="text" value={fin.myHome?.address || ""} onChange={(e) => updateFin({ myHome: { ...fin.myHome, address: e.target.value } })} placeholder="407 Detering Street, Houston, TX 77007"
+              className="w-full text-sm text-stone-700 bg-stone-50 border border-stone-200 rounded-lg px-3 py-2.5 focus:outline-none focus:border-sky-400 focus:ring-2 focus:ring-sky-100" />
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <label className="text-[10px] text-stone-400 uppercase tracking-wider font-semibold">Latitude</label>
+                <input type="number" step="0.0001" value={fin.myHome?.lat || ""} onChange={(e) => updateFin({ myHome: { ...fin.myHome, lat: parseFloat(e.target.value) || null } })}
+                  className="w-full text-xs text-stone-600 bg-stone-50 border border-stone-200 rounded-lg px-3 py-2 focus:outline-none focus:border-sky-400" />
+              </div>
+              <div>
+                <label className="text-[10px] text-stone-400 uppercase tracking-wider font-semibold">Longitude</label>
+                <input type="number" step="0.0001" value={fin.myHome?.lng || ""} onChange={(e) => updateFin({ myHome: { ...fin.myHome, lng: parseFloat(e.target.value) || null } })}
+                  className="w-full text-xs text-stone-600 bg-stone-50 border border-stone-200 rounded-lg px-3 py-2 focus:outline-none focus:border-sky-400" />
+              </div>
+            </div>
+            <button onClick={async () => {
+              const addr = fin.myHome?.address;
+              if (!addr) return;
+              try {
+                const q = encodeURIComponent(addr);
+                const res = await fetch("https://nominatim.openstreetmap.org/search?q=" + q + "&format=json&limit=1", { headers: { "User-Agent": "CRIBSApp/1.0" }, signal: AbortSignal.timeout(6000) });
+                const data = await res.json();
+                if (data?.[0]) updateFin({ myHome: { ...fin.myHome, lat: parseFloat(data[0].lat), lng: parseFloat(data[0].lon) } });
+              } catch {}
+            }} className="text-xs text-sky-600 font-medium hover:text-sky-700">Geocode from address →</button>
+          </div>
+        </div>
+
         {/* Key Locations */}
         <div className="bg-white border border-stone-200 rounded-2xl p-4 anim-fade-up" style={{ animationDelay: '280ms' }}>
           <h3 className="text-sm font-semibold text-stone-700 mb-1">Key Locations</h3>
@@ -4538,7 +4628,7 @@ export default function CribsApp() {
     return { cash: 750000, rate: DEFAULT_RATE, term: 30, propTax: 1.8, insurance: 3600, closing: 2.5, appreciation: 3, projYears: 10, grossIncome: 0, monthlyDebts: 0, dtiLimit: 36, places: [
     { label: "Work", address: "2322 W Grand Pkwy N, Katy, TX", lat: 29.8335, lng: -95.7675, icon: "briefcase" },
     { label: "Mom's House", address: "16015 Beechnut St, Houston, TX", lat: 29.6880, lng: -95.5810, icon: "heart" },
-  ] };
+  ], myHome: { address: "407 Detering Street, Houston, TX 77007", lat: 29.7663, lng: -95.4165 } };
   });
   const updateFin = (updates) => setFin((prev) => {
     const next = { ...prev, ...updates };
@@ -4729,7 +4819,9 @@ export default function CribsApp() {
     if (activeHome?.id === id) setActiveHome((prev) => ({ ...prev, ...updates }));
   };
 
-  const openHome = (h, filteredList) => {
+  const openHome = (hOrId, filteredList) => {
+    let h = typeof hOrId === "string" ? homes.find(x => x.id === hOrId) : hOrId;
+    if (!h) return;
     if (!h.viewed) {
       setHomes((prev) => prev.map((x) => x.id === h.id ? { ...x, viewed: true } : x));
       h = { ...h, viewed: true };
@@ -4775,7 +4867,7 @@ export default function CribsApp() {
               <svg className="w-5 h-5" viewBox="0 0 24 24" fill="white"><path d="M12 3L2 12h3v8h5v-5h4v5h5v-8h3L12 3z"/></svg>
             </div>
             <h1 className="text-lg font-bold tracking-tight text-stone-800">CRIBS</h1>
-            <span className="text-[10px] text-stone-400 font-medium ml-1 self-end mb-0.5">v1.6.5</span>
+            <span className="text-[10px] text-stone-400 font-medium ml-1 self-end mb-0.5">v1.6.6</span>
           </button>
           <nav className="flex gap-1 bg-stone-100 rounded-lg p-0.5 border border-stone-200">
             <button onClick={goList} className={`px-4 py-2 text-sm font-medium rounded-md transition-colors ${screen === "list" || screen === "detail" ? "bg-white text-sky-600 shadow-sm" : "text-stone-500 hover:text-stone-700"}`}>Homes</button>
@@ -4795,7 +4887,7 @@ export default function CribsApp() {
         {screen === "list" && <HomeListScreen homes={homes} setHomes={setHomes} onOpenHome={openHome} compareList={compareList} toggleCompare={toggleCompare} onImport={handleImport} fin={fin} rateInfo={rateInfo} schoolFilter={schoolFilter} setSchoolFilter={setSchoolFilter} maxBudget={maxBudget} enrichDone={enrichDone} enrichProgress={enrichProgress} />}
         {screen === "detail" && activeHome && <ErrorBoundary><HomeDetailScreen home={activeHome} onBack={goList} onUpdate={updateHome} onDelete={(id) => { const found = homes.find(x => x.id === id); if (found) trackDeletion(found.address); setHomes((p) => p.filter((x) => x.id !== id)); }} compareList={compareList} toggleCompare={toggleCompare} fin={fin} navList={navList} onNavigate={navigateHome} allHomes={homes} soldComps={soldComps} onFilterBySchool={(name) => { setSchoolFilter(name); setScreen("list"); }} maxBudget={maxBudget} /></ErrorBoundary>}
         {screen === "compare" && <CompareScreen homes={homes} compareList={compareList} toggleCompare={toggleCompare} clearCompare={() => setCompareList([])} onOpenHome={openHome} fin={fin} />}
-        {screen === "tours" && <TourPlannerScreen homes={homes} onOpenHome={openHome} />}
+        {screen === "tours" && <TourPlannerScreen homes={homes} onOpenHome={openHome} myHome={fin.myHome} />}
         {screen === "settings" && <SettingsScreen fin={fin} updateFin={updateFin} liveRate={liveRate} rateInfo={rateInfo} homes={homes} setHomes={setHomes} soldComps={soldComps} setSoldComps={setSoldComps} darkMode={darkMode} setDarkMode={setDarkMode} onTriggerEnrich={() => { enrichingRef.current = false; setEnrichDone(false); setEnrichProgress({ done: 0, total: 0 }); setEnrichTrigger(t => t + 1); }} enrichDone={enrichDone} />}
       </div>
 
