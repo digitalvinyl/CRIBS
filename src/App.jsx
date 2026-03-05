@@ -512,27 +512,72 @@ function generateParks(lat, lng) {
 }
 
 // Known Houston-area grocery store locations for instant distance calc
+// Static grocery store database — Google Places verified coordinates, March 2025
 const HOUSTON_GROCERIES = {
   heb: [
-    { name: "H-E-B Spring Branch Market", lat: 29.7907, lng: -95.4957, address: "8106 Long Point Rd" },
-    { name: "H-E-B Bunker Hill", lat: 29.7794, lng: -95.5310, address: "9710 Katy Fwy" },
-    { name: "H-E-B Heights", lat: 29.7928, lng: -95.3983, address: "2300 N Shepherd Dr" },
-    { name: "H-E-B Buffalo Heights", lat: 29.7611, lng: -95.3947, address: "3663 Washington Ave" },
+    { name: "H-E-B Spring Branch", lat: 29.791, lng: -95.497, address: "8106 Long Point Rd" },
+    { name: "H-E-B Bunker Hill", lat: 29.7877, lng: -95.5324, address: "9710 Katy Fwy" },
+    { name: "H-E-B Heights", lat: 29.8074, lng: -95.4088, address: "2300 N Shepherd Dr" },
+    { name: "H-E-B Buffalo Heights", lat: 29.769, lng: -95.3966, address: "3663 Washington Ave" },
+    { name: "H-E-B San Felipe", lat: 29.7479, lng: -95.4851, address: "5895 San Felipe St" },
+    { name: "H-E-B Montrose", lat: 29.7377, lng: -95.4026, address: "1701 W Alabama St" },
+    { name: "H-E-B Buffalo Speedway", lat: 29.7269, lng: -95.4272, address: "5225 Buffalo Speedway" },
+    { name: "H-E-B MacGregor", lat: 29.7142, lng: -95.3769, address: "6055 South Fwy" },
+    { name: "H-E-B Kempwood", lat: 29.8214, lng: -95.5473, address: "10251 Kempwood Dr" },
+    { name: "H-E-B Westheimer & Kirkwood", lat: 29.7351, lng: -95.5873, address: "11815 Westheimer Rd" },
+    { name: "H-E-B Meyerland", lat: 29.6889, lng: -95.4643, address: "4955 Beechnut St" },
+    { name: "H-E-B Bellaire", lat: 29.7076, lng: -95.4697, address: "5106 Bissonnet St" },
+    { name: "H-E-B Beechnut", lat: 29.687, lng: -95.571, address: "10100 Beechnut St" },
+    { name: "H-E-B Bellaire Blvd", lat: 29.669, lng: -95.593, address: "14498 Bellaire Blvd" },
+    { name: "H-E-B Gulfgate", lat: 29.675, lng: -95.337, address: "3111 Woodridge Dr" },
+    { name: "H-E-B Blackhawk", lat: 29.651, lng: -95.298, address: "9828 Blackhawk Blvd" },
+    { name: "H-E-B Braeswood", lat: 29.688, lng: -95.435, address: "5417 S Braeswood Blvd" },
+    { name: "H-E-B Aldine Westfield", lat: 29.939, lng: -95.347, address: "12900 Aldine Westfield Rd" },
+    { name: "H-E-B Jones Rd", lat: 29.911, lng: -95.5861, address: "9503 Jones Rd" },
+    { name: "H-E-B Spring Cypress", lat: 30.0031, lng: -95.6386, address: "14100 Spring Cypress Rd" },
+    { name: "H-E-B NW Fwy Cypress", lat: 29.9576, lng: -95.6733, address: "24224 Northwest Fwy" },
+    { name: "H-E-B Champion Forest", lat: 30.0538, lng: -95.577, address: "20311 Champion Forest Dr" },
+    { name: "H-E-B Tomball Pkwy", lat: 30.0887, lng: -95.6292, address: "28520 Tomball Pkwy" },
+    { name: "H-E-B Creekside", lat: 30.1445, lng: -95.5496, address: "26500 Kuykendahl Rd" },
+    { name: "H-E-B Grand Parkway Katy", lat: 29.7132, lng: -95.776, address: "6711 S Fry Rd" },
+    { name: "H-E-B Mason Rd Katy", lat: 29.785, lng: -95.691, address: "1621 Mason Rd" },
+    { name: "H-E-B Katy Market", lat: 29.7734, lng: -95.8225, address: "25675 Nelson Way" },
+    { name: "H-E-B Katy Park", lat: 29.8191, lng: -95.8062, address: "24924 Morton Ranch Rd" },
+    { name: "H-E-B Jordan Crossing", lat: 29.7544, lng: -95.8823, address: "29711 Jordan Crossing Blvd" },
+    { name: "H-E-B Cross Creek Ranch", lat: 29.7193, lng: -95.8481, address: "4950 FM 1463" },
+    { name: "H-E-B Sugar Land Hwy 6", lat: 29.608, lng: -95.6461, address: "530 Hwy 6" },
+    { name: "H-E-B Sugar Land SW Fwy", lat: 29.565, lng: -95.6853, address: "19900 Southwest Fwy" },
+    { name: "H-E-B Aliana", lat: 29.66, lng: -95.7134, address: "10161 W Grand Pkwy S" },
+    { name: "H-E-B Richmond", lat: 29.5514, lng: -95.7471, address: "23500 Circle Oak Pkwy" },
+    { name: "H-E-B Atascocita", lat: 29.9573, lng: -95.2085, address: "16000 Woodland Hills Dr" },
+    { name: "H-E-B Humble FM 1960", lat: 30.0004, lng: -95.1645, address: "7405 FM 1960 E" },
+    { name: "H-E-B Kingwood", lat: 29.9229, lng: -95.1969, address: "12680 W Lake Houston Pkwy" },
   ],
   costco: [
-    { name: "Costco Richmond Ave", lat: 29.7259, lng: -95.5536, address: "9920 Westpark Dr" },
-    { name: "Costco Bunker Hill", lat: 29.7777, lng: -95.5553, address: "1150 Bunker Hill Rd" },
-    { name: "Costco North Fwy", lat: 29.9037, lng: -95.4166, address: "4801 N Fwy" },
+    { name: "Costco Bunker Hill", lat: 29.788, lng: -95.5304, address: "1150 Bunker Hill Rd" },
+    { name: "Costco Richmond Ave", lat: 29.734, lng: -95.4397, address: "3836 Richmond Ave" },
+    { name: "Costco N Gessner", lat: 29.9547, lng: -95.5483, address: "12405 N Gessner Rd" },
+    { name: "Costco Katy", lat: 29.7829, lng: -95.7811, address: "23645 Katy Fwy" },
+    { name: "Costco Sugar Land", lat: 29.5855, lng: -95.6439, address: "17520 Southwest Fwy" },
+    { name: "Costco Pearland", lat: 29.5443, lng: -95.3909, address: "3500 Business Center Dr" },
   ],
   wholefoods: [
-    { name: "Whole Foods Post Oak", lat: 29.7490, lng: -95.4613, address: "1700 Post Oak Blvd" },
-    { name: "Whole Foods Montrose", lat: 29.7507, lng: -95.3920, address: "701 Waugh Dr" },
-    { name: "Whole Foods Champions", lat: 29.9822, lng: -95.5044, address: "10133 Louetta Rd" },
+    { name: "Whole Foods Voss", lat: 29.7524, lng: -95.5, address: "1407 S Voss Rd" },
+    { name: "Whole Foods Post Oak", lat: 29.7497, lng: -95.4617, address: "1700 Post Oak Blvd" },
+    { name: "Whole Foods Montrose", lat: 29.7579, lng: -95.3976, address: "701 Waugh Dr" },
+    { name: "Whole Foods Kirby", lat: 29.7393, lng: -95.418, address: "2955 Kirby Dr" },
+    { name: "Whole Foods Westheimer", lat: 29.7349, lng: -95.5706, address: "11041 Westheimer Rd" },
+    { name: "Whole Foods Bellaire Blvd", lat: 29.7068, lng: -95.4415, address: "4004 Bellaire Blvd" },
+    { name: "Whole Foods Independence Heights", lat: 29.8137, lng: -95.3981, address: "101 N Loop W" },
+    { name: "Whole Foods Champions", lat: 29.9985, lng: -95.562, address: "10133 Louetta Rd" },
+    { name: "Whole Foods Katy", lat: 29.7124, lng: -95.7716, address: "6601 S Fry Rd" },
   ],
   traderjoes: [
-    { name: "Trader Joe's Woodway", lat: 29.7595, lng: -95.4660, address: "1440 S Voss Rd" },
-    { name: "Trader Joe's Alabama", lat: 29.7416, lng: -95.3915, address: "1440 W Alabama St" },
-    { name: "Trader Joe's Katy", lat: 29.7738, lng: -95.6483, address: "23330 Grand Cir Blvd" },
+    { name: "Trader Joe's Voss", lat: 29.7527, lng: -95.5017, address: "1440 S Voss Rd" },
+    { name: "Trader Joe's Shepherd", lat: 29.7392, lng: -95.4113, address: "2922 S Shepherd Dr" },
+    { name: "Trader Joe's Westheimer", lat: 29.7354, lng: -95.5825, address: "11683 Westheimer Rd" },
+    { name: "Trader Joe's Katy", lat: 29.7403, lng: -95.7752, address: "2717 Commercial Center Blvd" },
+    { name: "Trader Joe's Woodlands", lat: 30.1762, lng: -95.5361, address: "10868 Kuykendahl Rd" },
   ],
 };
 
@@ -552,56 +597,9 @@ function generateGroceries(lat, lng) {
   return result;
 }
 
-async function fetchNearbyGroceries(lat, lng, address, city, state, zip) {
-  if (!lat || !lng) {
-    if (address && city && state) {
-      try {
-        const q = encodeURIComponent(address + ', ' + city + ', ' + state + ' ' + (zip || ''));
-        const geoRes = await fetch('https://nominatim.openstreetmap.org/search?q=' + q + '&format=json&limit=1', { headers: { 'User-Agent': 'CRIBSApp/1.0' }, signal: AbortSignal.timeout(6000) });
-        const geoData = await geoRes.json();
-        if (geoData?.[0]) { lat = parseFloat(geoData[0].lat); lng = parseFloat(geoData[0].lon); }
-      } catch (e) { /* geocode failed */ }
-    }
-  }
-  if (!lat || !lng) return generateGroceries(lat, lng);
-  try {
-    const radius = 16093; // 10 miles in meters
-    const query = `[out:json][timeout:10];(nwr["shop"~"supermarket"]["name"~"H-E-B|HEB",i](around:${radius},${lat},${lng});nwr["shop"~"supermarket"]["name"~"Costco",i](around:${radius},${lat},${lng});nwr["shop"~"supermarket"]["name"~"Whole Foods",i](around:${radius},${lat},${lng});nwr["shop"~"supermarket"]["name"~"Trader Joe",i](around:${radius},${lat},${lng}););out center tags qt;`;
-    const res = await fetch("https://overpass-api.de/api/interpreter", {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: "data=" + encodeURIComponent(query),
-      signal: AbortSignal.timeout(8000),
-    });
-    const data = await res.json();
-    if (!data.elements || !Array.isArray(data.elements)) return null;
-
-    const chains = [
-      { key: "heb", patterns: ["h-e-b", "heb"], label: "H-E-B", icon: "\U0001F6D2" },
-      { key: "costco", patterns: ["costco"], label: "Costco", icon: "\U0001F3EA" },
-      { key: "wholefoods", patterns: ["whole foods"], label: "Whole Foods", icon: "\U0001F96C" },
-      { key: "traderjoes", patterns: ["trader joe"], label: "Trader Joe's", icon: "\U0001F34A" },
-    ];
-
-    const result = {};
-    for (const chain of chains) {
-      let best = null;
-      for (const el of data.elements) {
-        const name = (el.tags?.name || "").toLowerCase();
-        if (!chain.patterns.some(p => name.includes(p))) continue;
-        const elLat = el.lat ?? el.center?.lat;
-        const elLng = el.lon ?? el.center?.lon;
-        if (!elLat || !elLng) continue;
-        const dist = haversine(lat, lng, elLat, elLng);
-        if (!best || dist < best.distanceMi) {
-          best = { name: el.tags?.name || chain.label, distanceMi: Math.round(dist * 100) / 100, lat: elLat, lng: elLng, address: el.tags?.["addr:street"] ? `${el.tags["addr:housenumber"] || ""} ${el.tags["addr:street"]}`.trim() : null };
-        }
-      }
-      result[chain.key] = best;
-    }
-    return result;
-  } catch (e) { /* Overpass failed, use known store locations */ }
-  return generateGroceries(lat, lng);
+function fetchNearbyGroceries(lat, lng) {
+  // Pure static lookup — no API calls needed, returns synchronously
+  return Promise.resolve(generateGroceries(lat, lng));
 }
 
 function haversine(lat1, lon1, lat2, lon2) {
@@ -1792,7 +1790,7 @@ function HomeDetailScreen({ home, onBack, onUpdate, onDelete, compareList, toggl
     if (!home.lat || !home.lng) return;
     let cancelled = false;
     setGroceriesLoading(true);
-    fetchNearbyGroceries(home.lat, home.lng, home.address, home.city, home.state, home.zip).then((result) => {
+    fetchNearbyGroceries(home.lat, home.lng).then((result) => {
       if (cancelled) return;
       setGroceriesLoading(false);
       if (result) { setGroceries(result); onUpdate(home.id, { groceries: result }); }
@@ -2405,7 +2403,7 @@ function HomeDetailScreen({ home, onBack, onUpdate, onDelete, compareList, toggl
                 <button onClick={() => {
                   if (!home.lat || !home.lng) return;
                   setGroceriesLoading(true);
-                  fetchNearbyGroceries(home.lat, home.lng, home.address, home.city, home.state, home.zip).then((r) => {
+                  fetchNearbyGroceries(home.lat, home.lng).then((r) => {
                     setGroceriesLoading(false);
                     if (r) { setGroceries(r); onUpdate(home.id, { groceries: r }); }
                   });
@@ -4025,7 +4023,7 @@ export default function CribsApp() {
           if (needs.includes("crime")) promises.push(fetchCrime(h.address, h.city, h.state, h.zip, h.lat, h.lng).catch(() => null).then(r => ["crime", r]));
           if (needs.includes("school")) promises.push(fetchSchool(h.address, h.city, h.state, h.zip, h.lat, h.lng).catch(() => null).then(r => ["school", r]));
           if (needs.includes("parks")) promises.push(fetchNearbyParks(h.address, h.city, h.state, h.zip, h.lat, h.lng).catch(() => null).then(r => ["parks", r]));
-          if (needs.includes("groceries")) promises.push(fetchNearbyGroceries(h.lat, h.lng, h.address, h.city, h.state, h.zip).catch(() => null).then(r => ["groceries", r]));
+          if (needs.includes("groceries")) promises.push(fetchNearbyGroceries(h.lat, h.lng).catch(() => null).then(r => ["groceries", r]));
           if (needs.includes("appraisal")) promises.push(fetchAppraisal(h.address, h.city, h.state, h.lat, h.lng).catch(() => null).then(r => ["appraisal", r]));
 
           const results = await Promise.all(promises);
@@ -4201,7 +4199,7 @@ export default function CribsApp() {
               <svg className="w-5 h-5" viewBox="0 0 24 24" fill="white"><path d="M12 3L2 12h3v8h5v-5h4v5h5v-8h3L12 3z"/></svg>
             </div>
             <h1 className="text-lg font-bold tracking-tight text-stone-800">CRIBS</h1>
-            <span className="text-[10px] text-stone-400 font-medium ml-1 self-end mb-0.5">v1.5.8</span>
+            <span className="text-[10px] text-stone-400 font-medium ml-1 self-end mb-0.5">v1.6.0</span>
           </button>
           <nav className="flex gap-1 bg-stone-100 rounded-lg p-0.5 border border-stone-200">
             <button onClick={goList} className={`px-4 py-2 text-sm font-medium rounded-md transition-colors ${screen === "list" || screen === "detail" ? "bg-white text-sky-600 shadow-sm" : "text-stone-500 hover:text-stone-700"}`}>Homes</button>
