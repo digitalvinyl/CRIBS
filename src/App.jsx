@@ -435,6 +435,31 @@ const HOUSTON_PARKS = [
   { name: "Collins Park", lat: 30.043, lng: -95.417, type: "Park", acres: 22, amenities: ["Pool", "Playground", "Tennis"] },
 ];
 
+// Static non-religious private elementary schools — Google Places verified, tuition ~2025-26
+const HOUSTON_PRIVATE_SCHOOLS = [
+  { name: "The Kinkaid School", lat: 29.7492, lng: -95.5108, tuition: 28500, grades: "PK–12", ratio: "10:1", nicheGrade: "A+", philosophy: "College prep", desc: "Houston's oldest independent co-ed school. Rigorous academics, strong arts & athletics. 100% college placement." },
+  { name: "The Awty International School", lat: 29.7869, lng: -95.4602, tuition: 28000, grades: "PK–12", ratio: "8:1", nicheGrade: "A+", philosophy: "International / IB", desc: "French-American bilingual and international curriculum with IB program. 65+ nationalities represented." },
+  { name: "School of the Woods", lat: 29.7936, lng: -95.4856, tuition: 19400, grades: "PK–12", ratio: "7:1", nicheGrade: "A+", philosophy: "Montessori", desc: "Montessori-based with contemporary methods. Student-led learning in Spring Branch/Hilshire Village area." },
+  { name: "The Post Oak School", lat: 29.7145, lng: -95.456, tuition: 24000, grades: "PK–12", ratio: "10:1", nicheGrade: "A+", philosophy: "Montessori / IB", desc: "Montessori foundation with IB programme. Emphasis on independence, collaboration, and peace education." },
+  { name: "The Village School", lat: 29.7457, lng: -95.6177, tuition: 26000, grades: "PK–12", ratio: "10:1", nicheGrade: "A", philosophy: "IB World School", desc: "Full IB continuum school (PYP, MYP, DP). Day and boarding options with global student body." },
+  { name: "Trafton Academy", lat: 29.668, lng: -95.457, tuition: 12000, grades: "PK–8", ratio: "10:1", nicheGrade: "A", philosophy: "Traditional", desc: "Affordable independent school since 1973. Small classes, strong fundamentals, SW Houston location." },
+  { name: "The Banff School", lat: 29.9768, lng: -95.5395, tuition: 14000, grades: "K–12", ratio: "8:1", nicheGrade: "B+", philosophy: "Traditional", desc: "North Houston independent school. Individualized learning plans, simplified admissions process." },
+  { name: "British International School", lat: 29.7994, lng: -95.7371, tuition: 22000, grades: "PK–12", ratio: "8:1", nicheGrade: "A", philosophy: "British / IB", desc: "British National Curriculum with IB Diploma. Located in Katy area with global perspective." },
+  { name: "Lycée International de Houston", lat: 29.7891, lng: -95.6619, tuition: 15000, grades: "PK–8", ratio: "12:1", nicheGrade: "A", philosophy: "French bilingual", desc: "French-English bilingual program following French Ministry of Education curriculum. Accredited by AEFE." },
+];
+
+function findNearestPrivateSchool(lat, lng) {
+  if (!lat || !lng) return null;
+  let best = null;
+  for (const s of HOUSTON_PRIVATE_SCHOOLS) {
+    const dist = haversine(lat, lng, s.lat, s.lng);
+    if (!best || dist < best.distanceMi) {
+      best = { ...s, distanceMi: Math.round(dist * 100) / 100 };
+    }
+  }
+  return best;
+}
+
 function generateParks(lat, lng) {
   if (!lat || !lng) return null;
   const parks = [];
@@ -2223,6 +2248,55 @@ function HomeDetailScreen({ home, onBack, onUpdate, onDelete, compareList, toggl
             )}
           </div>
         </div>
+
+        {/* ── Nearest Private School (Non-Religious) ──────────────── */}
+        {(() => {
+          const ps = findNearestPrivateSchool(home.lat, home.lng);
+          if (!ps) return null;
+          return (
+            <div className="border rounded-2xl overflow-hidden anim-fade-up bg-violet-50/40 border-violet-200" style={{ animationDelay: '248ms' }}>
+              <div className="p-4">
+                <div className="flex items-center justify-between mb-3">
+                  <div className="flex items-center gap-2">
+                    <span className="text-lg">🎓</span>
+                    <h3 className="text-sm font-semibold text-stone-700">Private School Alternative</h3>
+                  </div>
+                  <span className="text-xs font-semibold px-2.5 py-1 rounded-full bg-violet-100 text-violet-600">Non-Religious</span>
+                </div>
+                <div className="space-y-3">
+                  <div className="rounded-xl p-3.5 bg-violet-100/60 border border-violet-200/50">
+                    <div className="text-lg font-bold text-violet-700">{ps.name}</div>
+                    <div className="text-sm text-stone-500 mt-0.5">{ps.philosophy} · {ps.grades}</div>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <div className="bg-violet-100/40 rounded-xl p-2.5 text-center flex-1 min-w-[70px]">
+                      <div className="text-[10px] text-stone-400 uppercase tracking-wider font-semibold">Tuition</div>
+                      <div className="text-xl font-bold mt-0.5 text-violet-600">${(ps.tuition / 1000).toFixed(0)}<span className="text-xs text-stone-400 font-normal">K/yr</span></div>
+                    </div>
+                    <div className="bg-violet-100/40 rounded-xl p-2.5 text-center flex-1 min-w-[70px]">
+                      <div className="text-[10px] text-stone-400 uppercase tracking-wider font-semibold">Distance</div>
+                      <div className="text-xl font-bold mt-0.5 text-violet-600">{ps.distanceMi}<span className="text-xs text-stone-400 font-normal"> mi</span></div>
+                    </div>
+                    <div className="bg-violet-100/40 rounded-xl p-2.5 text-center flex-1 min-w-[70px]">
+                      <div className="text-[10px] text-stone-400 uppercase tracking-wider font-semibold">Stu:Teacher</div>
+                      <div className="text-xl font-bold mt-0.5 text-violet-600">{ps.ratio}</div>
+                    </div>
+                    {ps.nicheGrade && (
+                      <div className="bg-violet-100/40 rounded-xl p-2.5 text-center flex-1 min-w-[70px]">
+                        <div className="text-[10px] text-stone-400 uppercase tracking-wider font-semibold">Niche</div>
+                        <div className="text-xl font-bold mt-0.5 text-violet-600">{ps.nicheGrade}</div>
+                      </div>
+                    )}
+                  </div>
+                  <p className="text-sm text-stone-600 leading-relaxed">{ps.desc}</p>
+                  <div className="rounded-xl px-3.5 py-2.5 text-sm bg-violet-100/40 text-violet-700">
+                    <strong className="text-xs uppercase tracking-wider">Annual cost:</strong> ~${ps.tuition.toLocaleString()}/year ({`$${Math.round(ps.tuition / 12).toLocaleString()}/mo`})
+                  </div>
+                </div>
+              </div>
+            </div>
+          );
+        })()}
 
         {/* ── Parks & Green Space ──────────────────────────────── */}
         <div className={`border rounded-2xl overflow-hidden anim-fade-up ${parks?.greenSpaceScore === "excellent" ? "bg-emerald-50/50 border-emerald-200" : parks?.greenSpaceScore === "good" ? "bg-teal-50/50 border-teal-200" : "bg-white border-stone-200"}`} style={{ animationDelay: '260ms' }}>
@@ -4151,7 +4225,7 @@ export default function CribsApp() {
               <svg className="w-5 h-5" viewBox="0 0 24 24" fill="white"><path d="M12 3L2 12h3v8h5v-5h4v5h5v-8h3L12 3z"/></svg>
             </div>
             <h1 className="text-lg font-bold tracking-tight text-stone-800">CRIBS</h1>
-            <span className="text-[10px] text-stone-400 font-medium ml-1 self-end mb-0.5">v1.6.1</span>
+            <span className="text-[10px] text-stone-400 font-medium ml-1 self-end mb-0.5">v1.6.2</span>
           </button>
           <nav className="flex gap-1 bg-stone-100 rounded-lg p-0.5 border border-stone-200">
             <button onClick={goList} className={`px-4 py-2 text-sm font-medium rounded-md transition-colors ${screen === "list" || screen === "detail" ? "bg-white text-sky-600 shadow-sm" : "text-stone-500 hover:text-stone-700"}`}>Homes</button>
