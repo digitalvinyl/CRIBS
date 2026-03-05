@@ -3211,222 +3211,442 @@ function HomeDetailScreen({ home, onBack, onUpdate, onDelete, compareList, toggl
 function parseOHDate(str) {
   if (!str) return null;
   try {
-    // Try direct parse first (works for ISO format)
     let d = new Date(str);
     if (!isNaN(d.getTime())) return d;
-    // Redfin format: "Saturday, Mar 8, 2025 12:00pm" — strip day name prefix
     const stripped = str.replace(/^(monday|tuesday|wednesday|thursday|friday|saturday|sunday),?\s*/i, "");
     d = new Date(stripped);
     if (!isNaN(d.getTime())) return d;
-    // Try replacing am/pm variants
-    const normalized = stripped.replace(/(\d)(am|pm)/i, "$1 $2");
-    d = new Date(normalized);
+    d = new Date(stripped.replace(/(\d)(am|pm)/i, "$1 $2"));
     if (!isNaN(d.getTime())) return d;
   } catch (e) {}
   return null;
 }
+function formatOHTime(d) { return d ? d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true }) : ""; }
+function formatOHDate(d) { return d ? d.toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric" }) : ""; }
+function getDateKey(d) { return d ? d.toLocaleDateString("en-US", { year: "numeric", month: "2-digit", day: "2-digit" }) : ""; }
 
-function formatOHTime(d) {
-  if (!d) return "";
-  return d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true });
+// Nearest-neighbor TSP approximation for route optimization
+function optimizeRoute(stops) {
+  if (stops.length <= 2) return stops;
+  const remaining = [...stops];
+  const route = [remaining.shift()]; // start with first
+  while (remaining.length > 0) {
+    const last = route[route.length - 1];
+    let bestIdx = 0, bestDist = Infinity;
+    for (let i = 0; i < remaining.length; i++) {
+      if (!last.lat || !remaining[i].lat) continue;
+      const d = haversine(last.lat, last.lng, remaining[i].lat, remaining[i].lng);
+      if (d < bestDist) { bestDist = d; bestIdx = i; }
+    }
+    route.push(remaining.splice(bestIdx, 1)[0]);
+  }
+  return route;
 }
 
-function formatOHDate(d) {
-  if (!d) return "";
-  return d.toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric" });
-}
-
-function getDateKey(d) {
-  if (!d) return "";
-  return d.toLocaleDateString("en-US", { year: "numeric", month: "2-digit", day: "2-digit" });
-}
+// Estimate drive time (Houston traffic: ~25mph avg)
+function estDriveMin(miles) { return Math.round(miles / 25 * 60); }
 
 function TourPlannerScreen({ homes, onOpenHome }) {
-  const [tourList, setTourList] = useState(() => {
-    try { return JSON.parse(localStorage.getItem("cribs_tour_list") || "[]"); } catch { return []; }
+  const [tourDays, setTourDays] = useState(() => {
+    try { return JSON.parse(localStorage.getItem("cribs_tour_days") || "{}"); } catch { return {}; }
   });
-  useEffect(() => { try { localStorage.setItem("cribs_tour_list", JSON.stringify(tourList)); } catch {} }, [tourList]);
+  const [activeDay, setActiveDay] = useState(null);
+  const [tourNotes, setTourNotes] = useState(() => {
+    try { return JSON.parse(localStorage.getItem("cribs_tour_notes") || "{}"); } catch { return {}; }
+  });
+  const [showBrowse, setShowBrowse] = useState(false);
+  const [browseSearch, setBrowseSearch] = useState("");
 
-  const toggleTour = (id) => setTourList(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
+  // Persist
+  useEffect(() => { try { localStorage.setItem("cribs_tour_days", JSON.stringify(tourDays)); } catch {} }, [tourDays]);
+  useEffect(() => { try { localStorage.setItem("cribs_tour_notes", JSON.stringify(tourNotes)); } catch {} }, [tourNotes]);
 
-  // Collect all homes with open house data
-  const ohHomes = homes.filter(h => h.nextOpenHouseStart).map(h => {
+  const toggleHomeInDay = (dayKey, homeId) => {
+    setTourDays(prev => {
+      const dayList = prev[dayKey] || [];
+      const next = dayList.includes(homeId) ? dayList.filter(x => x !== homeId) : [...dayList, homeId];
+      return { ...prev, [dayKey]: next };
+    });
+  };
+
+  const removeDay = (dayKey) => setTourDays(prev => { const n = { ...prev }; delete n[dayKey]; return n; });
+
+  const reorderInDay = (dayKey, fromIdx, toIdx) => {
+    setTourDays(prev => {
+      const list = [...(prev[dayKey] || [])];
+      const [item] = list.splice(fromIdx, 1);
+      list.splice(toIdx, 0, item);
+      return { ...prev, [dayKey]: list };
+    });
+  };
+
+  const autoOptimizeDay = (dayKey) => {
+    setTourDays(prev => {
+      const ids = prev[dayKey] || [];
+      const stops = ids.map(id => homes.find(h => h.id === id)).filter(Boolean);
+      const optimized = optimizeRoute(stops);
+      return { ...prev, [dayKey]: optimized.map(h => h.id) };
+    });
+  };
+
+  // Collect homes with open houses
+  const now = new Date();
+  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const ohHomes = homes.map(h => {
     const start = parseOHDate(h.nextOpenHouseStart);
     const end = parseOHDate(h.nextOpenHouseEnd);
     return { ...h, ohStart: start, ohEnd: end };
-  }).filter(h => h.ohStart).sort((a, b) => a.ohStart - b.ohStart);
+  });
+  const upcomingOH = ohHomes.filter(h => h.ohStart && h.ohStart >= todayStart).sort((a, b) => a.ohStart - b.ohStart);
 
-  // Separate into upcoming vs past
-  const now = new Date();
-  const todayKey = getDateKey(now);
-  const upcoming = ohHomes.filter(h => h.ohStart >= new Date(now.getFullYear(), now.getMonth(), now.getDate()));
-  const past = ohHomes.filter(h => h.ohStart < new Date(now.getFullYear(), now.getMonth(), now.getDate()));
-
-  // Group upcoming by date
-  const grouped = {};
-  for (const h of upcoming) {
+  // Group upcoming OH by date
+  const ohByDate = {};
+  for (const h of upcomingOH) {
     const key = getDateKey(h.ohStart);
-    if (!grouped[key]) grouped[key] = { date: h.ohStart, homes: [] };
-    grouped[key].homes.push(h);
+    if (!ohByDate[key]) ohByDate[key] = { date: h.ohStart, homes: [] };
+    ohByDate[key].homes.push(h);
   }
-  const days = Object.values(grouped).sort((a, b) => a.date - b.date);
 
-  // Tour plan — homes user has selected, in order
-  const tourHomes = tourList.map(id => ohHomes.find(h => h.id === id)).filter(Boolean);
+  // Build tour days list — include user-created days + OH days
+  const allDayKeys = new Set([...Object.keys(tourDays), ...Object.keys(ohByDate)]);
+  const daysList = [...allDayKeys].map(key => {
+    const ohDay = ohByDate[key];
+    const tourIds = tourDays[key] || [];
+    const tourStops = tourIds.map(id => homes.find(h => h.id === id)).filter(Boolean);
+    // Enrich with OH data
+    const enriched = tourStops.map(h => {
+      const oh = upcomingOH.find(o => o.id === h.id);
+      return { ...h, ohStart: oh?.ohStart || null, ohEnd: oh?.ohEnd || null };
+    });
+    return { key, date: ohDay?.date || parseOHDate(key) || new Date(key), tourStops: enriched, ohHomes: ohDay?.homes || [], hasTour: tourIds.length > 0 };
+  }).sort((a, b) => a.date - b.date);
 
-  // Calculate distances between consecutive tour stops
-  const tourDistances = [];
-  for (let i = 1; i < tourHomes.length; i++) {
-    if (tourHomes[i-1].lat && tourHomes[i].lat) {
-      tourDistances.push(haversine(tourHomes[i-1].lat, tourHomes[i-1].lng, tourHomes[i].lat, tourHomes[i].lng));
-    } else tourDistances.push(null);
+  // Active day for detail view — default to first day with a tour, or first upcoming
+  const activeDayObj = daysList.find(d => d.key === activeDay) || daysList.find(d => d.hasTour) || daysList[0];
+
+  // Available homes for browsing (not sold)
+  const soldSet = new Set(homes.filter(h => h.status && h.status.toLowerCase().includes("sold")).map(h => h.id));
+  const browsableHomes = homes.filter(h => !soldSet.has(h.id));
+  const filteredBrowse = browseSearch
+    ? browsableHomes.filter(h => (h.address || "").toLowerCase().includes(browseSearch.toLowerCase()) || (h.city || "").toLowerCase().includes(browseSearch.toLowerCase()))
+    : browsableHomes;
+
+  // Day label helpers
+  const dayLabel = (d) => {
+    const key = getDateKey(d);
+    const todayKey = getDateKey(now);
+    const tom = new Date(now); tom.setDate(tom.getDate() + 1);
+    if (key === todayKey) return "Today";
+    if (key === getDateKey(tom)) return "Tomorrow";
+    return formatOHDate(d);
+  };
+  const dayTag = (d) => {
+    const dow = d.getDay();
+    const days = Math.ceil((d - todayStart) / 86400000);
+    if (days === 0) return { text: "Today", color: "sky" };
+    if (days === 1) return { text: "Tomorrow", color: "sky" };
+    if ((dow === 0 || dow === 6) && days <= 7) return { text: "This Weekend", color: "emerald" };
+    if ((dow === 0 || dow === 6) && days <= 14) return { text: "Next Weekend", color: "amber" };
+    return null;
+  };
+
+  // Route distances for active day
+  const activeStops = activeDayObj?.tourStops || [];
+  const routeLegs = [];
+  for (let i = 1; i < activeStops.length; i++) {
+    const a = activeStops[i-1], b = activeStops[i];
+    if (a.lat && b.lat) {
+      const mi = haversine(a.lat, a.lng, b.lat, b.lng);
+      routeLegs.push({ miles: mi, minutes: estDriveMin(mi) });
+    } else routeLegs.push(null);
   }
-  const totalMiles = tourDistances.filter(Boolean).reduce((s, d) => s + d, 0);
+  const totalMi = routeLegs.filter(Boolean).reduce((s, l) => s + l.miles, 0);
+  const totalMin = routeLegs.filter(Boolean).reduce((s, l) => s + l.minutes, 0);
 
-  // Homes with no open house but in tour list (manually added)
-  const manualHomes = homes.filter(h => !h.nextOpenHouseStart && tourList.includes(h.id));
+  // Color palette for stop numbers
+  const stopColors = ["bg-sky-500", "bg-violet-500", "bg-emerald-500", "bg-amber-500", "bg-rose-500", "bg-indigo-500", "bg-teal-500", "bg-orange-500"];
 
   return (
-    <div className="px-4 md:px-6 py-4 md:py-6 space-y-6 max-w-5xl mx-auto pb-28 md:pb-8">
+    <div className="px-4 md:px-6 py-4 md:py-6 max-w-6xl mx-auto pb-28 md:pb-8">
       {/* Header */}
-      <div className="anim-fade-up">
-        <h2 className="text-2xl font-bold text-stone-800 flex items-center gap-2">
-          <span className="text-2xl">🗓</span> Open House Tour Planner
-        </h2>
-        <p className="text-sm text-stone-500 mt-1">Plan your weekend open house route. Select homes to build your tour.</p>
+      <div className="flex items-center justify-between mb-6 anim-fade-up">
+        <div>
+          <h2 className="text-2xl font-bold text-stone-800 flex items-center gap-2.5">
+            <span className="w-9 h-9 rounded-xl bg-gradient-to-br from-emerald-400 to-sky-500 flex items-center justify-center text-white text-lg shadow-lg shadow-emerald-200/50">🗓</span>
+            Tour Planner
+          </h2>
+          <p className="text-sm text-stone-400 mt-1">Plan your open house route &amp; build your weekend tour</p>
+        </div>
+        <button onClick={() => setShowBrowse(!showBrowse)}
+          className={`flex items-center gap-1.5 px-3.5 py-2 text-sm font-medium rounded-xl border transition-all ${showBrowse ? "bg-sky-50 border-sky-300 text-sky-700" : "bg-white border-stone-200 text-stone-600 hover:border-stone-300"}`}>
+          <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" /></svg>
+          Add Homes
+        </button>
       </div>
 
-      {/* Tour Summary Card */}
-      {tourHomes.length > 0 && (
-        <div className="bg-gradient-to-r from-sky-50 to-violet-50 border border-sky-200 rounded-2xl p-5 anim-fade-up" style={{ animationDelay: "50ms" }}>
-          <div className="flex items-center justify-between mb-3">
-            <h3 className="text-sm font-bold text-stone-700 uppercase tracking-wider flex items-center gap-2">
-              <span className="text-lg">🚗</span> Your Tour Plan
-            </h3>
-            <div className="flex items-center gap-3">
-              {totalMiles > 0 && <span className="text-xs font-semibold text-sky-600 bg-sky-100 px-2.5 py-1 rounded-full">~{totalMiles.toFixed(1)} mi total</span>}
-              <span className="text-xs font-semibold text-violet-600 bg-violet-100 px-2.5 py-1 rounded-full">{tourHomes.length} stop{tourHomes.length !== 1 ? "s" : ""}</span>
+      <div className="flex gap-6 flex-col lg:flex-row">
+        {/* ── Left: Day Tabs + Itinerary ───────────────────── */}
+        <div className="flex-1 min-w-0 space-y-4">
+
+          {/* Day selector tabs */}
+          {daysList.length > 0 && (
+            <div className="flex gap-2 overflow-x-auto pb-1 anim-fade-up" style={{ animationDelay: "50ms" }}>
+              {daysList.map(d => {
+                const tag = dayTag(d.date);
+                const isActive = activeDayObj?.key === d.key;
+                const ct = (tourDays[d.key] || []).length;
+                const ohCt = d.ohHomes.length;
+                return (
+                  <button key={d.key} onClick={() => { setActiveDay(d.key); setShowBrowse(false); }}
+                    className={`flex-shrink-0 px-4 py-2.5 rounded-xl border text-left transition-all ${isActive ? "bg-white border-sky-300 shadow-md shadow-sky-100/50 ring-1 ring-sky-200" : "bg-stone-50 border-stone-200 hover:border-stone-300"}`}>
+                    <div className="flex items-center gap-2">
+                      <span className={`text-sm font-bold ${isActive ? "text-sky-700" : "text-stone-700"}`}>{dayLabel(d.date)}</span>
+                      {tag && <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-${tag.color}-100 text-${tag.color}-600 uppercase`}>{tag.text}</span>}
+                    </div>
+                    <div className="flex items-center gap-2 mt-0.5">
+                      {ct > 0 && <span className="text-[10px] text-sky-600 font-semibold">{ct} stop{ct !== 1 ? "s" : ""}</span>}
+                      {ohCt > 0 && ct === 0 && <span className="text-[10px] text-emerald-600 font-semibold">{ohCt} open house{ohCt !== 1 ? "s" : ""}</span>}
+                    </div>
+                  </button>
+                );
+              })}
+              {/* Add custom day */}
+              <button onClick={() => {
+                const input = window.prompt("Enter a date for your tour (e.g. 3/15/2025):");
+                if (input) {
+                  const d = new Date(input);
+                  if (!isNaN(d.getTime())) {
+                    const key = getDateKey(d);
+                    if (!tourDays[key]) setTourDays(prev => ({ ...prev, [key]: [] }));
+                    setActiveDay(key);
+                  }
+                }
+              }} className="flex-shrink-0 px-3 py-2.5 rounded-xl border-2 border-dashed border-stone-200 text-stone-400 hover:border-sky-300 hover:text-sky-500 transition-all text-sm font-medium">
+                + Day
+              </button>
             </div>
-          </div>
-          <div className="space-y-2">
-            {tourHomes.map((h, i) => (
-              <div key={h.id} className="flex items-center gap-3 bg-white/80 rounded-xl p-3 border border-white">
-                <div className="w-7 h-7 rounded-full bg-sky-500 text-white flex items-center justify-center text-xs font-bold flex-shrink-0">{i + 1}</div>
-                <div className="flex-1 min-w-0">
-                  <button onClick={() => onOpenHome(h.id)} className="text-sm font-semibold text-stone-800 hover:text-sky-600 truncate block text-left">{h.address}</button>
-                  <div className="text-xs text-stone-500">
-                    {h.ohStart ? formatOHTime(h.ohStart) : "No time set"}
-                    {h.ohEnd ? " – " + formatOHTime(h.ohEnd) : ""}
-                    {h.price ? " · $" + h.price.toLocaleString() : ""}
+          )}
+
+          {/* Active day itinerary */}
+          {activeDayObj && (activeDayObj.hasTour || activeDayObj.ohHomes.length > 0) ? (
+            <div className="anim-fade-up" style={{ animationDelay: "100ms" }}>
+              {/* Day header + stats */}
+              <div className="flex items-center justify-between mb-4">
+                <div className="flex items-center gap-3">
+                  <h3 className="text-lg font-bold text-stone-800">{dayLabel(activeDayObj.date)}</h3>
+                  {activeStops.length > 0 && (
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-semibold text-sky-600 bg-sky-50 border border-sky-200 px-2 py-0.5 rounded-full">{activeStops.length} stop{activeStops.length !== 1 ? "s" : ""}</span>
+                      {totalMi > 0 && <span className="text-xs font-semibold text-violet-600 bg-violet-50 border border-violet-200 px-2 py-0.5 rounded-full">~{totalMi.toFixed(1)} mi</span>}
+                      {totalMin > 0 && <span className="text-xs font-semibold text-amber-600 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-full">~{totalMin} min drive</span>}
+                    </div>
+                  )}
+                </div>
+                {activeStops.length >= 2 && (
+                  <button onClick={() => autoOptimizeDay(activeDayObj.key)}
+                    className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg hover:bg-emerald-100 transition-colors">
+                    <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
+                    Optimize Route
+                  </button>
+                )}
+              </div>
+
+              {/* Tour stops */}
+              {activeStops.length > 0 ? (
+                <div className="space-y-0">
+                  {activeStops.map((h, i) => {
+                    const color = stopColors[i % stopColors.length];
+                    const note = tourNotes[h.id] || "";
+                    const school = h.school;
+                    return (
+                      <div key={h.id}>
+                        {/* Drive leg between stops */}
+                        {i > 0 && routeLegs[i-1] && (
+                          <div className="flex items-center gap-2 py-2 pl-3.5">
+                            <div className="w-7 flex justify-center"><div className="w-0.5 h-6 bg-stone-200 rounded-full" /></div>
+                            <div className="flex items-center gap-1.5 text-[10px] text-stone-400 font-medium">
+                              <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M5 12h14M12 5l7 7-7 7" /></svg>
+                              {routeLegs[i-1].miles.toFixed(1)} mi · ~{routeLegs[i-1].minutes} min drive
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Stop card */}
+                        <div className="bg-white border border-stone-200 rounded-2xl p-4 hover:border-stone-300 transition-all hover:shadow-sm group">
+                          <div className="flex gap-3">
+                            {/* Stop number */}
+                            <div className="flex flex-col items-center gap-1 flex-shrink-0">
+                              <div className={`w-8 h-8 rounded-full ${color} text-white flex items-center justify-center text-sm font-bold shadow-sm`}>{i + 1}</div>
+                              {/* Move arrows */}
+                              <div className="flex flex-col opacity-0 group-hover:opacity-100 transition-opacity">
+                                {i > 0 && <button onClick={() => reorderInDay(activeDayObj.key, i, i - 1)} className="text-stone-300 hover:text-stone-600 p-0.5"><svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5}><path strokeLinecap="round" strokeLinejoin="round" d="M5 15l7-7 7 7" /></svg></button>}
+                                {i < activeStops.length - 1 && <button onClick={() => reorderInDay(activeDayObj.key, i, i + 1)} className="text-stone-300 hover:text-stone-600 p-0.5"><svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5}><path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" /></svg></button>}
+                              </div>
+                            </div>
+
+                            {/* Main card content */}
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-start justify-between gap-2">
+                                <div className="min-w-0">
+                                  <button onClick={() => onOpenHome(h.id)} className="text-base font-bold text-stone-800 hover:text-sky-600 transition-colors truncate block text-left">{h.address}</button>
+                                  <div className="text-xs text-stone-400 mt-0.5">{[h.city, h.zip].filter(Boolean).join(" ")}</div>
+                                </div>
+                                <button onClick={() => toggleHomeInDay(activeDayObj.key, h.id)} className="text-stone-300 hover:text-red-500 transition-colors p-1 flex-shrink-0" title="Remove stop">
+                                  <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
+                                </button>
+                              </div>
+
+                              {/* Stats row */}
+                              <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-2">
+                                {h.price > 0 && <span className="text-sm font-bold text-stone-800">${h.price.toLocaleString()}</span>}
+                                <span className="text-xs text-stone-500">{h.beds || "?"}bd / {h.baths || "?"}ba</span>
+                                {h.sqft > 0 && <span className="text-xs text-stone-500">{h.sqft.toLocaleString()} sf</span>}
+                                {h.ppsf > 0 && <span className="text-xs text-stone-400">${h.ppsf}/sf</span>}
+                                {h.yearBuilt > 0 && <span className="text-xs text-stone-400">Built {h.yearBuilt}</span>}
+                              </div>
+
+                              {/* Open house time + School + Status badges */}
+                              <div className="flex flex-wrap items-center gap-1.5 mt-2">
+                                {h.ohStart && (
+                                  <span className="text-[10px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-md">
+                                    🏠 {formatOHTime(h.ohStart)}{h.ohEnd ? " – " + formatOHTime(h.ohEnd) : ""}
+                                  </span>
+                                )}
+                                {school && school.rating && (
+                                  <span className={`text-[10px] font-bold px-2 py-0.5 rounded-md border ${school.tier === "great" ? "text-sky-700 bg-sky-50 border-sky-200" : school.tier === "good" ? "text-amber-700 bg-amber-50 border-amber-200" : "text-orange-700 bg-orange-50 border-orange-200"}`}>
+                                    🏫 {school.schoolName ? school.schoolName.split(" ").slice(0,2).join(" ") : ""} {school.rating}/10
+                                  </span>
+                                )}
+                                {h.hoa > 0 && <span className="text-[10px] font-semibold text-stone-500 bg-stone-100 px-2 py-0.5 rounded-md">HOA ${h.hoa}/mo</span>}
+                                {h.dom != null && <span className="text-[10px] font-semibold text-stone-500 bg-stone-100 px-2 py-0.5 rounded-md">{h.dom}d on market</span>}
+                                {h.favorite && <span className="text-[10px] font-bold text-rose-600 bg-rose-50 border border-rose-200 px-2 py-0.5 rounded-md">♥ Favorite</span>}
+                              </div>
+
+                              {/* Inline notes */}
+                              <div className="mt-2">
+                                <input
+                                  type="text"
+                                  placeholder="Add tour notes (questions to ask, things to check)..."
+                                  value={note}
+                                  onChange={(e) => setTourNotes(prev => ({ ...prev, [h.id]: e.target.value }))}
+                                  className="w-full text-xs text-stone-600 bg-stone-50 border border-stone-200 rounded-lg px-3 py-1.5 placeholder-stone-300 focus:outline-none focus:border-sky-300 focus:ring-1 focus:ring-sky-200 transition-all"
+                                />
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                /* Day has open houses but no tour stops yet */
+                <div className="bg-stone-50 border border-dashed border-stone-200 rounded-2xl p-6 text-center">
+                  <p className="text-stone-500 font-medium mb-1">No stops planned yet for {dayLabel(activeDayObj.date)}</p>
+                  <p className="text-xs text-stone-400">Add homes from the open houses below or click "Add Homes" to browse all listings</p>
+                </div>
+              )}
+
+              {/* Open houses available this day (not yet in tour) */}
+              {activeDayObj.ohHomes.filter(h => !(tourDays[activeDayObj.key] || []).includes(h.id)).length > 0 && (
+                <div className="mt-4">
+                  <h4 className="text-xs font-bold text-stone-400 uppercase tracking-wider mb-2">Available Open Houses</h4>
+                  <div className="grid gap-1.5">
+                    {activeDayObj.ohHomes.filter(h => !(tourDays[activeDayObj.key] || []).includes(h.id)).map(h => (
+                      <div key={h.id} className="flex items-center gap-3 bg-white border border-stone-200 rounded-xl p-3 hover:border-emerald-300 transition-all">
+                        <button onClick={() => toggleHomeInDay(activeDayObj.key, h.id)}
+                          className="w-6 h-6 rounded-lg border-2 border-emerald-300 hover:bg-emerald-500 hover:border-emerald-500 hover:text-white flex items-center justify-center flex-shrink-0 transition-all text-emerald-500">
+                          <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5}><path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" /></svg>
+                        </button>
+                        <div className="flex-1 min-w-0">
+                          <button onClick={() => onOpenHome(h.id)} className="text-sm font-semibold text-stone-700 hover:text-sky-600 truncate block text-left">{h.address}</button>
+                          <span className="text-xs text-emerald-600 font-medium">{formatOHTime(h.ohStart)}{h.ohEnd ? " – " + formatOHTime(h.ohEnd) : ""}</span>
+                        </div>
+                        <div className="text-right flex-shrink-0">
+                          {h.price > 0 && <div className="text-sm font-bold text-stone-700">${(h.price / 1000).toFixed(0)}K</div>}
+                          <div className="text-[10px] text-stone-400">{h.beds}/{h.baths} · {h.sqft ? h.sqft.toLocaleString() + "sf" : ""}</div>
+                        </div>
+                      </div>
+                    ))}
                   </div>
                 </div>
-                {i > 0 && tourDistances[i-1] != null && (
-                  <span className="text-[10px] text-stone-400 flex-shrink-0">{tourDistances[i-1].toFixed(1)} mi</span>
-                )}
-                <button onClick={() => toggleTour(h.id)} className="text-stone-400 hover:text-red-500 transition-colors flex-shrink-0 p-1" title="Remove from tour">✕</button>
-              </div>
-            ))}
-          </div>
-          <button onClick={() => setTourList([])} className="mt-3 text-xs text-stone-400 hover:text-red-500 transition-colors">Clear tour</button>
-        </div>
-      )}
+              )}
 
-      {/* Upcoming Open Houses by Day */}
-      {days.length > 0 ? days.map((day, di) => {
-        const dayLabel = formatOHDate(day.date);
-        const isToday = getDateKey(day.date) === todayKey;
-        const tomorrow = new Date(now); tomorrow.setDate(tomorrow.getDate() + 1);
-        const isTomorrow = getDateKey(day.date) === getDateKey(tomorrow);
-        const tag = isToday ? "Today" : isTomorrow ? "Tomorrow" : null;
-        // Check if it's this weekend
-        const dayOfWeek = day.date.getDay();
-        const isWeekend = dayOfWeek === 0 || dayOfWeek === 6;
-        const daysAway = Math.ceil((day.date - new Date(now.getFullYear(), now.getMonth(), now.getDate())) / 86400000);
-        const isThisWeekend = isWeekend && daysAway <= 7;
-        const isNextWeekend = isWeekend && daysAway > 7 && daysAway <= 14;
-
-        return (
-          <div key={di} className="anim-fade-up" style={{ animationDelay: `${100 + di * 60}ms` }}>
-            <div className="flex items-center gap-2 mb-3">
-              <h3 className="text-base font-bold text-stone-800">{dayLabel}</h3>
-              {tag && <span className="text-[10px] font-bold text-sky-600 bg-sky-100 px-2 py-0.5 rounded-full uppercase">{tag}</span>}
-              {!tag && isThisWeekend && <span className="text-[10px] font-bold text-emerald-600 bg-emerald-100 px-2 py-0.5 rounded-full uppercase">This Weekend</span>}
-              {!tag && isNextWeekend && <span className="text-[10px] font-bold text-amber-600 bg-amber-100 px-2 py-0.5 rounded-full uppercase">Next Weekend</span>}
-              <span className="text-xs text-stone-400">{day.homes.length} open house{day.homes.length !== 1 ? "s" : ""}</span>
+              {/* Day actions */}
+              {activeDayObj.hasTour && (
+                <div className="flex items-center gap-3 mt-4 pt-3 border-t border-stone-100">
+                  <button onClick={() => { if (window.confirm("Remove all stops from " + dayLabel(activeDayObj.date) + "?")) removeDay(activeDayObj.key); }}
+                    className="text-xs text-stone-400 hover:text-red-500 transition-colors">Clear day</button>
+                </div>
+              )}
             </div>
-            <div className="grid gap-2">
-              {day.homes.map(h => {
-                const inTour = tourList.includes(h.id);
-                return (
-                  <div key={h.id} className={`flex items-center gap-3 rounded-xl p-3.5 border transition-all ${inTour ? "bg-sky-50 border-sky-300 shadow-sm" : "bg-white border-stone-200 hover:border-stone-300"}`}>
-                    <button onClick={() => toggleTour(h.id)}
-                      className={`w-6 h-6 rounded-lg border-2 flex items-center justify-center flex-shrink-0 transition-all ${inTour ? "bg-sky-500 border-sky-500 text-white" : "border-stone-300 hover:border-sky-400"}`}>
-                      {inTour && <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={3}><path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" /></svg>}
-                    </button>
-                    <div className="flex-1 min-w-0">
-                      <button onClick={() => onOpenHome(h.id)} className="text-sm font-semibold text-stone-800 hover:text-sky-600 truncate block text-left">{h.address}</button>
-                      <div className="flex items-center gap-2 mt-0.5 flex-wrap">
-                        <span className="text-xs font-medium text-sky-600 bg-sky-100/60 px-1.5 py-0.5 rounded">
-                          {formatOHTime(h.ohStart)}{h.ohEnd ? " – " + formatOHTime(h.ohEnd) : ""}
-                        </span>
-                        {h.city && <span className="text-xs text-stone-400">{h.city}</span>}
+          ) : daysList.length === 0 ? (
+            <div className="bg-stone-50 border border-dashed border-stone-200 rounded-2xl p-10 text-center anim-fade-up" style={{ animationDelay: "100ms" }}>
+              <span className="text-5xl block mb-4">🏡</span>
+              <p className="text-stone-600 font-semibold text-lg mb-2">No open houses or tours yet</p>
+              <p className="text-sm text-stone-400 max-w-md mx-auto mb-4">Import a fresh Redfin CSV to pull open house dates, or click "Add Homes" to manually build a tour day.</p>
+              <button onClick={() => setShowBrowse(true)}
+                className="px-4 py-2 bg-sky-500 text-white font-medium rounded-xl hover:bg-sky-600 transition-colors text-sm">
+                + Build a Tour
+              </button>
+            </div>
+          ) : null}
+        </div>
+
+        {/* ── Right: Add Homes Sidebar ─────────────────── */}
+        {showBrowse && (
+          <div className="lg:w-80 flex-shrink-0 anim-fade-up" style={{ animationDelay: "50ms" }}>
+            <div className="bg-white border border-stone-200 rounded-2xl p-4 lg:sticky lg:top-20">
+              <div className="flex items-center justify-between mb-3">
+                <h4 className="text-sm font-bold text-stone-700">Add to {activeDayObj ? dayLabel(activeDayObj.date) : "Tour"}</h4>
+                <button onClick={() => setShowBrowse(false)} className="text-stone-400 hover:text-stone-600 p-1">
+                  <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
+                </button>
+              </div>
+              <input type="text" placeholder="Search by address..." value={browseSearch} onChange={(e) => setBrowseSearch(e.target.value)}
+                className="w-full text-sm bg-stone-50 border border-stone-200 rounded-lg px-3 py-2 mb-3 placeholder-stone-400 focus:outline-none focus:border-sky-300" />
+              {!activeDayObj && (
+                <p className="text-xs text-amber-600 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-3">Select or create a day first using the tabs above, then add homes to it.</p>
+              )}
+              <div className="space-y-1 max-h-96 overflow-y-auto">
+                {filteredBrowse.map(h => {
+                  const inDay = activeDayObj && (tourDays[activeDayObj.key] || []).includes(h.id);
+                  const hasOH = h.nextOpenHouseStart && parseOHDate(h.nextOpenHouseStart) >= todayStart;
+                  return (
+                    <div key={h.id} className={`flex items-center gap-2.5 rounded-lg p-2 border transition-all ${inDay ? "bg-sky-50 border-sky-200" : "bg-white border-transparent hover:bg-stone-50"}`}>
+                      <button onClick={() => activeDayObj && toggleHomeInDay(activeDayObj.key, h.id)} disabled={!activeDayObj}
+                        className={`w-5 h-5 rounded border-2 flex items-center justify-center flex-shrink-0 transition-all ${inDay ? "bg-sky-500 border-sky-500 text-white" : "border-stone-300 hover:border-sky-400"} ${!activeDayObj ? "opacity-30" : ""}`}>
+                        {inDay && <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={3}><path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" /></svg>}
+                      </button>
+                      <div className="flex-1 min-w-0">
+                        <div className="text-xs font-semibold text-stone-700 truncate">{h.address}</div>
+                        <div className="flex items-center gap-1.5">
+                          {h.price > 0 && <span className="text-[10px] text-stone-500">${(h.price / 1000).toFixed(0)}K</span>}
+                          {hasOH && <span className="text-[10px] text-emerald-600 font-semibold">OH</span>}
+                          {h.favorite && <span className="text-[10px] text-rose-500">♥</span>}
+                        </div>
                       </div>
                     </div>
-                    <div className="text-right flex-shrink-0">
-                      {h.price > 0 && <div className="text-sm font-bold text-stone-800">${(h.price / 1000).toFixed(0)}K</div>}
-                      <div className="text-[10px] text-stone-400">{h.beds}/{h.baths} · {h.sqft ? h.sqft.toLocaleString() + "sf" : ""}</div>
-                    </div>
-                  </div>
-                );
-              })}
+                  );
+                })}
+                {filteredBrowse.length === 0 && <p className="text-xs text-stone-400 text-center py-4">No homes match</p>}
+              </div>
             </div>
           </div>
-        );
-      }) : (
-        <div className="bg-stone-50 border border-dashed border-stone-200 rounded-2xl p-8 text-center anim-fade-up" style={{ animationDelay: "100ms" }}>
-          <span className="text-4xl block mb-3">🏡</span>
-          <p className="text-stone-600 font-medium mb-1">No upcoming open houses found</p>
-          <p className="text-sm text-stone-400 max-w-md mx-auto">Open house dates come from Redfin CSV imports. Make sure your export is recent — Redfin includes the "Next Open House Start Time" and "Next Open House End Time" columns when available.</p>
-        </div>
-      )}
-
-      {/* All homes without open house — can manually add to tour */}
-      {upcoming.length > 0 && (
-        <div className="anim-fade-up" style={{ animationDelay: "300ms" }}>
-          <details className="group">
-            <summary className="text-sm font-semibold text-stone-500 cursor-pointer hover:text-stone-700 transition-colors list-none flex items-center gap-1">
-              <svg className="w-4 h-4 transition-transform group-open:rotate-90" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" /></svg>
-              Add homes without listed open houses
-            </summary>
-            <div className="mt-2 grid gap-1.5 max-h-60 overflow-y-auto">
-              {homes.filter(h => !h.nextOpenHouseStart && !(h.status && h.status.toLowerCase().includes("sold"))).map(h => {
-                const inTour = tourList.includes(h.id);
-                return (
-                  <div key={h.id} className={`flex items-center gap-3 rounded-lg p-2.5 border transition-all ${inTour ? "bg-sky-50 border-sky-300" : "bg-white border-stone-100 hover:border-stone-200"}`}>
-                    <button onClick={() => toggleTour(h.id)}
-                      className={`w-5 h-5 rounded border-2 flex items-center justify-center flex-shrink-0 transition-all ${inTour ? "bg-sky-500 border-sky-500 text-white" : "border-stone-300 hover:border-sky-400"}`}>
-                      {inTour && <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={3}><path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" /></svg>}
-                    </button>
-                    <button onClick={() => onOpenHome(h.id)} className="text-xs font-medium text-stone-700 hover:text-sky-600 truncate flex-1 text-left">{h.address}</button>
-                    {h.price > 0 && <span className="text-xs font-semibold text-stone-500 flex-shrink-0">${(h.price / 1000).toFixed(0)}K</span>}
-                  </div>
-                );
-              })}
-            </div>
-          </details>
-        </div>
-      )}
-
-      {/* Stats footer */}
-      <div className="text-xs text-stone-400 pt-2 border-t border-stone-100 anim-fade-up" style={{ animationDelay: "400ms" }}>
-        {upcoming.length} upcoming open house{upcoming.length !== 1 ? "s" : ""} across {days.length} day{days.length !== 1 ? "s" : ""}
-        {homes.filter(h => h.status && h.status.toLowerCase().includes("sold")).length > 0 && (
-          <span> · {homes.filter(h => h.status && h.status.toLowerCase().includes("sold")).length} sold properties in your list</span>
         )}
+      </div>
+
+      {/* Footer stats */}
+      <div className="text-xs text-stone-400 pt-4 mt-6 border-t border-stone-100 anim-fade-up" style={{ animationDelay: "300ms" }}>
+        {upcomingOH.length} upcoming open house{upcomingOH.length !== 1 ? "s" : ""}
+        {" · "}{Object.values(tourDays).filter(d => d.length > 0).length} tour day{Object.values(tourDays).filter(d => d.length > 0).length !== 1 ? "s" : ""} planned
+        {" · "}{Object.values(tourDays).flat().length} total stop{Object.values(tourDays).flat().length !== 1 ? "s" : ""}
+        {soldSet.size > 0 && <span> · {soldSet.size} sold (hidden)</span>}
       </div>
     </div>
   );
 }
+
 
 function CompareScreen({ homes, compareList, toggleCompare, clearCompare, onOpenHome, fin }) {
   const [compareFilter, setCompareFilter] = useState("all");
@@ -4555,7 +4775,7 @@ export default function CribsApp() {
               <svg className="w-5 h-5" viewBox="0 0 24 24" fill="white"><path d="M12 3L2 12h3v8h5v-5h4v5h5v-8h3L12 3z"/></svg>
             </div>
             <h1 className="text-lg font-bold tracking-tight text-stone-800">CRIBS</h1>
-            <span className="text-[10px] text-stone-400 font-medium ml-1 self-end mb-0.5">v1.6.4</span>
+            <span className="text-[10px] text-stone-400 font-medium ml-1 self-end mb-0.5">v1.6.5</span>
           </button>
           <nav className="flex gap-1 bg-stone-100 rounded-lg p-0.5 border border-stone-200">
             <button onClick={goList} className={`px-4 py-2 text-sm font-medium rounded-md transition-colors ${screen === "list" || screen === "detail" ? "bg-white text-sky-600 shadow-sm" : "text-stone-500 hover:text-stone-700"}`}>Homes</button>
