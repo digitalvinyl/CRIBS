@@ -22,6 +22,7 @@ class ErrorBoundary extends Component {
 const fmt = (n) => (n != null && !isNaN(n) ? "$" + Number(n).toLocaleString("en-US", { maximumFractionDigits: 0 }) : "—");
 const fmtC = (n) => (n != null && !isNaN(n) ? (Math.abs(n) >= 1e6 ? "$" + (n / 1e6).toFixed(3) + "M" : fmt(n)) : "—");
 const fmtNum = (n) => (n != null && !isNaN(n) ? Number(n).toLocaleString("en-US", { maximumFractionDigits: 0 }) : "—");
+const fmtShort = (n) => { if (n == null || isNaN(n)) return "—"; if (n >= 1e6) return "$" + (n / 1e6).toFixed(2) + "M"; if (n >= 1e3) return "$" + Math.round(n / 1e3) + "K"; return "$" + n; };
 const parseNum = (v) => { if (v == null || v === "") return null; const n = parseFloat(String(v).replace(/[$,%\s]/g, "")); return isNaN(n) ? null : n; };
 const normalizeAddr = (a) => (a || "").toLowerCase().replace(/[^a-z0-9]/g, "");
 
@@ -3250,43 +3251,80 @@ function TourRouteMap({ stops, myHome, dayKey }) {
   const ref = useRef(null);
   const mapRef = useRef(null);
   const stopsKey = stops.map(h => h.id).join(",") + (myHome?.lat || "");
+
   useEffect(() => {
-    if (!ref.current) return;
-    if (mapRef.current) { mapRef.current.remove(); mapRef.current = null; }
-    const allPts = [];
-    if (myHome?.lat) allPts.push([myHome.lat, myHome.lng]);
-    stops.forEach(h => { if (h.lat) allPts.push([h.lat, h.lng]); });
-    if (allPts.length === 0) return;
-    const L = window.L;
-    if (!L) return;
-    const map = L.map(ref.current, { zoomControl: false, attributionControl: false }).fitBounds(allPts, { padding: [35, 35] });
-    L.tileLayer("https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png", { maxZoom: 19 }).addTo(map);
-    mapRef.current = map;
-    // Home marker
-    if (myHome?.lat) {
-      L.marker([myHome.lat, myHome.lng], {
-        icon: L.divIcon({ className: "", html: '<div style="width:30px;height:30px;border-radius:50%;background:linear-gradient(135deg,#8b5cf6,#a855f7);display:flex;align-items:center;justify-content:center;color:white;font-size:15px;box-shadow:0 2px 8px rgba(139,92,246,0.5);border:2.5px solid white;">🏠</div>', iconSize: [30, 30], iconAnchor: [15, 15] })
-      }).addTo(map).bindPopup("<b>Home</b><br/>" + (myHome.address || "Starting point"));
+    if (!ref.current || stops.length === 0) return;
+
+    // Load CSS
+    if (!document.querySelector('link[href*="leaflet"]')) {
+      const link = document.createElement("link");
+      link.rel = "stylesheet";
+      link.href = "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css";
+      document.head.appendChild(link);
     }
-    // Stop markers with numbered pins
-    const colors = ["#0ea5e9", "#8b5cf6", "#10b981", "#f59e0b", "#f43f5e", "#6366f1", "#14b8a6", "#f97316"];
-    stops.forEach((h, i) => {
-      if (!h.lat) return;
-      const color = colors[i % colors.length];
-      L.marker([h.lat, h.lng], {
-        icon: L.divIcon({ className: "", html: '<div style="width:28px;height:28px;border-radius:50%;background:' + color + ';display:flex;align-items:center;justify-content:center;color:white;font-size:13px;font-weight:bold;box-shadow:0 2px 6px rgba(0,0,0,0.3);border:2.5px solid white;">' + (i + 1) + '</div>', iconSize: [28, 28], iconAnchor: [14, 14] })
-      }).addTo(map).bindPopup("<b>" + (i + 1) + ". " + h.address + "</b>" + (h.ohStart ? "<br/>" + formatOHTime(h.ohStart) + (h.ohEnd ? " – " + formatOHTime(h.ohEnd) : "") : "") + (h.price ? "<br/>$" + h.price.toLocaleString() : ""));
-    });
-    // Route polyline
-    const routePts = [];
-    if (myHome?.lat) routePts.push([myHome.lat, myHome.lng]);
-    stops.forEach(h => { if (h.lat) routePts.push([h.lat, h.lng]); });
-    if (routePts.length >= 2) {
-      L.polyline(routePts, { color: "#0ea5e9", weight: 3, opacity: 0.6, dashArray: "8 6" }).addTo(map);
+
+    const init = (L) => {
+      if (!ref.current) return;
+      if (mapRef.current) { mapRef.current.remove(); mapRef.current = null; }
+
+      const allPts = [];
+      if (myHome?.lat) allPts.push([myHome.lat, myHome.lng]);
+      stops.forEach(h => { if (h.lat) allPts.push([h.lat, h.lng]); });
+      if (allPts.length === 0) return;
+
+      const map = L.map(ref.current, { zoomControl: false, attributionControl: false, scrollWheelZoom: true });
+      L.control.zoom({ position: "topright" }).addTo(map);
+      const tileLayer = L.tileLayer("https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png", { maxZoom: 18, subdomains: "abcd" });
+      tileLayer.on("tileerror", () => {
+        if (!map._osfallback) { map._osfallback = true; tileLayer.remove(); L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 19 }).addTo(map); }
+      });
+      tileLayer.addTo(map);
+      mapRef.current = map;
+
+      // Home marker
+      if (myHome?.lat) {
+        L.marker([myHome.lat, myHome.lng], {
+          icon: L.divIcon({ className: "", html: '<div style="width:32px;height:32px;border-radius:50%;background:linear-gradient(135deg,#8b5cf6,#d946ef);display:flex;align-items:center;justify-content:center;color:white;font-size:16px;box-shadow:0 2px 8px rgba(139,92,246,0.5);border:3px solid white;">🏠</div>', iconSize: [32, 32], iconAnchor: [16, 16], popupAnchor: [0, -18] })
+        }).addTo(map).bindPopup("<b>Home</b><br/>" + (myHome.address || "Starting point"));
+      }
+
+      // Stop markers
+      const colors = ["#0ea5e9", "#8b5cf6", "#10b981", "#f59e0b", "#f43f5e", "#6366f1", "#14b8a6", "#f97316"];
+      const bounds = L.latLngBounds(allPts);
+      stops.forEach((h, i) => {
+        if (!h.lat) return;
+        const color = colors[i % colors.length];
+        L.marker([h.lat, h.lng], {
+          icon: L.divIcon({ className: "", html: '<div style="width:28px;height:28px;border-radius:50%;background:' + color + ';display:flex;align-items:center;justify-content:center;color:white;font-size:13px;font-weight:bold;box-shadow:0 2px 6px rgba(0,0,0,0.3);border:2.5px solid white;">' + (i + 1) + '</div>', iconSize: [28, 28], iconAnchor: [14, 14], popupAnchor: [0, -16] })
+        }).addTo(map).bindPopup("<b>" + (i + 1) + ". " + h.address + "</b>" + (h.ohStart ? "<br/>" + formatOHTime(h.ohStart) + (h.ohEnd ? " – " + formatOHTime(h.ohEnd) : "") : "") + (h.price ? "<br/>" + fmtShort(h.price) : ""));
+      });
+
+      // Route polyline
+      const routePts = [];
+      if (myHome?.lat) routePts.push([myHome.lat, myHome.lng]);
+      stops.forEach(h => { if (h.lat) routePts.push([h.lat, h.lng]); });
+      if (routePts.length >= 2) {
+        L.polyline(routePts, { color: "#0ea5e9", weight: 3, opacity: 0.7, dashArray: "8 6" }).addTo(map);
+      }
+
+      requestAnimationFrame(() => {
+        if (map && ref.current) { map.invalidateSize(); map.fitBounds(bounds.pad(0.15)); }
+      });
+    };
+
+    // Load Leaflet JS if not present
+    if (window.L) { init(window.L); }
+    else {
+      const script = document.createElement("script");
+      script.src = "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js";
+      script.onload = () => init(window.L);
+      document.head.appendChild(script);
     }
+
     return () => { if (mapRef.current) { mapRef.current.remove(); mapRef.current = null; } };
   }, [dayKey, stopsKey]);
-  return <div className="bg-white border border-stone-200 rounded-2xl overflow-hidden mb-4" style={{ height: 260 }}><div ref={ref} style={{ width: "100%", height: "100%" }} /></div>;
+
+  return <div className="bg-white border border-stone-200 rounded-2xl overflow-hidden mb-4" style={{ height: 280 }}><div ref={ref} style={{ width: "100%", height: "100%" }} /></div>;
 }
 
 function TourPlannerScreen({ homes, onOpenHome, myHome }) {
@@ -3556,7 +3594,7 @@ function TourPlannerScreen({ homes, onOpenHome, myHome }) {
 
                               {/* Stats row */}
                               <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-2">
-                                {h.price > 0 && <span className="text-sm font-bold text-stone-800">${h.price.toLocaleString()}</span>}
+                                {h.price > 0 && <span className="text-sm font-bold text-stone-800">{fmtShort(h.price)}</span>}
                                 <span className="text-xs text-stone-500">{h.beds || "?"}bd / {h.baths || "?"}ba</span>
                                 {h.sqft > 0 && <span className="text-xs text-stone-500">{h.sqft.toLocaleString()} sf</span>}
                                 {h.ppsf > 0 && <span className="text-xs text-stone-400">${h.ppsf}/sf</span>}
@@ -3618,11 +3656,16 @@ function TourPlannerScreen({ homes, onOpenHome, myHome }) {
                         </button>
                         <div className="flex-1 min-w-0">
                           <button onClick={() => onOpenHome(h.id)} className="text-sm font-semibold text-stone-700 hover:text-sky-600 truncate block text-left">{h.address}</button>
-                          <span className="text-xs text-emerald-600 font-medium">{formatOHTime(h.ohStart)}{h.ohEnd ? " – " + formatOHTime(h.ohEnd) : ""}</span>
+                          <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+                            <span className="text-[10px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-1.5 py-0 rounded">{formatOHTime(h.ohStart)}{h.ohEnd ? " – " + formatOHTime(h.ohEnd) : ""}</span>
+                            {h.beds && <span className="text-[10px] text-stone-400">{h.beds}bd/{h.baths}ba</span>}
+                            {h.sqft > 0 && <span className="text-[10px] text-stone-400">{fmtNum(h.sqft)}sf</span>}
+                            {h.yearBuilt > 0 && <span className="text-[10px] text-stone-400">'{String(h.yearBuilt).slice(2)}</span>}
+                          </div>
                         </div>
                         <div className="text-right flex-shrink-0">
-                          {h.price > 0 && <div className="text-sm font-bold text-stone-700">${(h.price / 1000).toFixed(0)}K</div>}
-                          <div className="text-[10px] text-stone-400">{h.beds}/{h.baths} · {h.sqft ? h.sqft.toLocaleString() + "sf" : ""}</div>
+                          {h.price > 0 && <div className="text-sm font-bold text-stone-700">{fmtShort(h.price)}</div>}
+                          {h.ppsf > 0 && <div className="text-[10px] text-stone-400">${h.ppsf}/sf</div>}
                         </div>
                       </div>
                     ))}
@@ -3670,18 +3713,30 @@ function TourPlannerScreen({ homes, onOpenHome, myHome }) {
                 {filteredBrowse.map(h => {
                   const inDay = activeDayObj && (tourDays[activeDayObj.key] || []).includes(h.id);
                   const hasOH = h.nextOpenHouseStart && parseOHDate(h.nextOpenHouseStart) >= todayStart;
+                  const ohD = hasOH ? parseOHDate(h.nextOpenHouseStart) : null;
                   return (
-                    <div key={h.id} className={`flex items-center gap-2.5 rounded-lg p-2 border transition-all ${inDay ? "bg-sky-50 border-sky-200" : "bg-white border-transparent hover:bg-stone-50"}`}>
-                      <button onClick={() => activeDayObj && toggleHomeInDay(activeDayObj.key, h.id)} disabled={!activeDayObj}
-                        className={`w-5 h-5 rounded border-2 flex items-center justify-center flex-shrink-0 transition-all ${inDay ? "bg-sky-500 border-sky-500 text-white" : "border-stone-300 hover:border-sky-400"} ${!activeDayObj ? "opacity-30" : ""}`}>
-                        {inDay && <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={3}><path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" /></svg>}
-                      </button>
-                      <div className="flex-1 min-w-0">
-                        <div className="text-xs font-semibold text-stone-700 truncate">{h.address}</div>
-                        <div className="flex items-center gap-1.5">
-                          {h.price > 0 && <span className="text-[10px] text-stone-500">${(h.price / 1000).toFixed(0)}K</span>}
-                          {hasOH && <span className="text-[10px] text-emerald-600 font-semibold">OH</span>}
-                          {h.favorite && <span className="text-[10px] text-rose-500">♥</span>}
+                    <div key={h.id} className={`rounded-xl p-2.5 border transition-all ${inDay ? "bg-sky-50 border-sky-200" : "bg-white border-stone-100 hover:border-stone-200 hover:bg-stone-50"}`}>
+                      <div className="flex items-start gap-2.5">
+                        <button onClick={() => activeDayObj && toggleHomeInDay(activeDayObj.key, h.id)} disabled={!activeDayObj}
+                          className={`w-5 h-5 mt-0.5 rounded border-2 flex items-center justify-center flex-shrink-0 transition-all ${inDay ? "bg-sky-500 border-sky-500 text-white" : "border-stone-300 hover:border-sky-400"} ${!activeDayObj ? "opacity-30" : ""}`}>
+                          {inDay && <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={3}><path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" /></svg>}
+                        </button>
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center justify-between gap-1">
+                            <button onClick={() => onOpenHome(h.id)} className="text-xs font-bold text-stone-700 hover:text-sky-600 truncate text-left">{h.address}</button>
+                            {h.favorite && <span className="text-[10px] text-rose-500 flex-shrink-0">♥</span>}
+                          </div>
+                          <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
+                            {h.price > 0 && <span className="text-[10px] font-bold text-stone-800">{fmtShort(h.price)}</span>}
+                            {h.beds && <span className="text-[10px] text-stone-400">{h.beds}bd/{h.baths}ba</span>}
+                            {h.sqft > 0 && <span className="text-[10px] text-stone-400">{fmtNum(h.sqft)}sf</span>}
+                            {h.yearBuilt > 0 && <span className="text-[10px] text-stone-400">'{String(h.yearBuilt).slice(2)}</span>}
+                          </div>
+                          <div className="flex items-center gap-1 mt-0.5 flex-wrap">
+                            {hasOH && <span className="text-[9px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-1 py-0 rounded">OH {ohD ? formatOHTime(ohD) : ""}</span>}
+                            {h.status && h.status.toLowerCase().includes("new") && <span className="text-[9px] font-bold text-sky-600 bg-sky-50 border border-sky-200 px-1 py-0 rounded">New</span>}
+                            {h.school?.rating && <span className="text-[9px] text-stone-400">🏫 {h.school.rating}/10</span>}
+                          </div>
                         </div>
                       </div>
                     </div>
@@ -4896,7 +4951,7 @@ export default function CribsApp() {
               <svg className="w-5 h-5" viewBox="0 0 24 24" fill="white"><path d="M12 3L2 12h3v8h5v-5h4v5h5v-8h3L12 3z"/></svg>
             </div>
             <h1 className="text-lg font-bold tracking-tight text-stone-800">CRIBS</h1>
-            <span className="text-[10px] text-stone-400 font-medium ml-1 self-end mb-0.5">v1.6.7</span>
+            <span className="text-[10px] text-stone-400 font-medium ml-1 self-end mb-0.5">v1.6.8</span>
           </button>
           <nav className="flex gap-1 bg-stone-100 rounded-lg p-0.5 border border-stone-200">
             <button onClick={goList} className={`px-4 py-2 text-sm font-medium rounded-md transition-colors ${screen === "list" || screen === "detail" ? "bg-white text-sky-600 shadow-sm" : "text-stone-500 hover:text-stone-700"}`}>Homes</button>
