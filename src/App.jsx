@@ -1,5 +1,71 @@
 import React, { useState, useMemo, useRef, useEffect, Component, createElement } from "react";
 
+/* ─── Supabase Cloud Sync ─────────────────────────────────────────── */
+
+const SUPABASE_URL = "https://edhsfcjtafiadjzjahko.supabase.co";
+const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVkaHNmY2p0YWZpYWRqemphaGtvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzI5MDE5MzcsImV4cCI6MjA4ODQ3NzkzN30.jrPyZP_BSYe2tZ2NS2WknLNkZHQNTHV0rtTYLeoC4x8";
+const SUPA_HEADERS = { apikey: SUPABASE_KEY, Authorization: "Bearer " + SUPABASE_KEY, "Content-Type": "application/json" };
+const SUPA_ENABLED = SUPABASE_KEY.length > 20;
+
+// Cloud keys to sync (others stay localStorage-only)
+const CLOUD_KEYS = ["cribs_homes", "cribs_fin", "cribs_sold_comps", "cribs_tour_days", "cribs_tour_notes", "cribs_user_data"];
+
+async function supaGet(key) {
+  if (!SUPA_ENABLED) return null;
+  try {
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/cribs_data?key=eq.${encodeURIComponent(key)}&select=value`, {
+      headers: SUPA_HEADERS, signal: AbortSignal.timeout(5000),
+    });
+    if (!res.ok) return null;
+    const rows = await res.json();
+    return rows?.[0]?.value ?? null;
+  } catch { return null; }
+}
+
+async function supaSet(key, value) {
+  if (!SUPA_ENABLED) return;
+  try {
+    await fetch(`${SUPABASE_URL}/rest/v1/cribs_data`, {
+      method: "POST",
+      headers: { ...SUPA_HEADERS, Prefer: "resolution=merge-duplicates" },
+      body: JSON.stringify({ key, value, updated_at: new Date().toISOString() }),
+      signal: AbortSignal.timeout(8000),
+    });
+  } catch { /* silent fail — localStorage is the fallback */ }
+}
+
+async function supaGetAll() {
+  if (!SUPA_ENABLED) return {};
+  try {
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/cribs_data?select=key,value`, {
+      headers: SUPA_HEADERS, signal: AbortSignal.timeout(8000),
+    });
+    if (!res.ok) { console.warn("CRIBS cloud fetch failed:", res.status); return {}; }
+    const text = await res.text();
+    if (!text || text[0] !== "[") return {};
+    const rows = JSON.parse(text);
+    const result = {};
+    for (const row of rows) { if (row && row.key) result[row.key] = row.value; }
+    return result;
+  } catch (e) { console.warn("CRIBS cloud getAll error:", e); return {}; }
+}
+
+// Debounced cloud saver — batches saves within 2 seconds
+const _supaPending = {};
+let _supaTimer = null;
+function supaSetDebounced(key, value) {
+  // Always save to localStorage immediately
+  try { localStorage.setItem(key, JSON.stringify(value)); } catch {}
+  if (!SUPA_ENABLED) return;
+  _supaPending[key] = value;
+  if (_supaTimer) clearTimeout(_supaTimer);
+  _supaTimer = setTimeout(() => {
+    const batch = { ..._supaPending };
+    for (const k in _supaPending) delete _supaPending[k];
+    for (const [k, v] of Object.entries(batch)) supaSet(k, v);
+  }, 2000);
+}
+
 /* ─── Helpers ────────────────────────────────────────────────────── */
 
 class ErrorBoundary extends Component {
@@ -1268,12 +1334,12 @@ function HomeListScreen({ homes, setHomes, onOpenHome, compareList, toggleCompar
           return (
             <div key={h.id} onClick={() => onOpenHome(h, filtered)}
               style={{ animationDelay: `${filtered.indexOf(h) * 40}ms` }}
-              className={`anim-fade-up rounded-xl border shadow-sm active:scale-[0.99] transition-transform cursor-pointer card-hover ${!h.viewed ? "bg-white border-l-[3px] border-l-sky-400 border-t border-r border-b border-t-stone-200 border-r-stone-200 border-b-stone-200" : "bg-white border-stone-200"}`}>
+              className={`anim-fade-up rounded-xl border shadow-sm active:scale-[0.99] transition-transform cursor-pointer card-hover ${!h.viewed ? "bg-white border-l-[3px] border-l-sky-400 border-t border-r border-b border-t-stone-200 border-r-stone-200 border-b-stone-200 ring-1 ring-sky-100" : "bg-stone-50/70 border-stone-200"}`}>
               <div className="p-3.5">
                 <div className="flex items-start justify-between gap-2 mb-1">
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-1.5 flex-wrap">
-                      <p className="font-semibold text-stone-800 truncate text-[15px]">{h.address || "—"}</p>
+                      <p className={`font-semibold truncate text-[15px] ${h.viewed ? "text-stone-500" : "text-stone-800"}`}>{h.address || "—"}</p>
                       <StatusBadge status={h.status} />
                       {h.nextOpenHouseStart && parseOHDate(h.nextOpenHouseStart) >= new Date(new Date().getFullYear(), new Date().getMonth(), new Date().getDate()) && (
                         <span className="text-[10px] font-bold text-emerald-600 bg-emerald-50 border border-emerald-200 px-1.5 py-0.5 rounded-md uppercase tracking-wide">Open House</span>
@@ -1294,6 +1360,11 @@ function HomeListScreen({ homes, setHomes, onOpenHome, compareList, toggleCompar
                       title={h.favorite ? "Unfavorite" : "Favorite"}
                       className={`mt-0.5 star-tap ${h.favorite ? "text-amber-400" : "text-stone-300 hover:text-amber-300"}`}>
                       <StarIcon filled={h.favorite} className="w-5 h-5" />
+                    </button>
+                    <button onClick={(e) => { e.stopPropagation(); setHomes((p) => p.map((x) => x.id === h.id ? { ...x, viewed: !x.viewed } : x)); }}
+                      title={h.viewed ? "Mark as unviewed" : "Mark as viewed"}
+                      className={`mt-0.5 ${h.viewed ? "text-stone-400 hover:text-stone-600" : "text-stone-200 hover:text-stone-400"} transition-colors`}>
+                      <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
                     </button>
                   </div>
                 </div>
@@ -1392,7 +1463,7 @@ function HomeListScreen({ homes, setHomes, onOpenHome, compareList, toggleCompar
               const monthly = h.price ? quickMonthly(h.price, fin.cash, h.hoa || 0, fin.rate, fin.closing, hTax2, h) : 0;
               const monthlyTax = h.price ? Math.round((h.price * hTax2 / 100) / 12) : 0;
               return (
-                <tr key={h.id} onClick={() => onOpenHome(h, filtered)} className="group hover:bg-sky-50/30 cursor-pointer transition-colors duration-200 hover:shadow-sm">
+                <tr key={h.id} onClick={() => onOpenHome(h, filtered)} className={`group cursor-pointer transition-colors duration-200 hover:shadow-sm ${h.viewed ? "bg-stone-50/50 hover:bg-stone-100/50" : "bg-white hover:bg-sky-50/30"}`}>
                   <td className="py-2.5 px-3 text-center" onClick={(e) => e.stopPropagation()}>
                     <button onClick={() => setHomes((p) => p.map((x) => x.id === h.id ? { ...x, favorite: !x.favorite } : x))}
                       title={h.favorite ? "Unfavorite" : "Favorite"}
@@ -1402,7 +1473,8 @@ function HomeListScreen({ homes, setHomes, onOpenHome, compareList, toggleCompar
                   </td>
                   <td className="py-2.5 px-3">
                     <div className="flex items-center gap-2">
-                      <span className="text-stone-800 font-medium truncate max-w-[220px]">{h.address || "—"}</span>
+                      <span className={`font-medium truncate max-w-[220px] ${h.viewed ? "text-stone-500" : "text-stone-800"}`}>{h.address || "—"}</span>
+                      {h.viewed && <svg className="w-3.5 h-3.5 text-stone-400 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>}
                       <StatusBadge status={h.status} />
                       {h.notes && <span className="w-1.5 h-1.5 rounded-full bg-amber-400 flex-shrink-0" title="Has notes" />}
                     </div>
@@ -1931,6 +2003,13 @@ function HomeDetailScreen({ home, onBack, onUpdate, onDelete, compareList, toggl
               <StarIcon filled={home.favorite} className="w-5 h-5" />
             </button>
             <StatusBadge status={home.status} />
+            <button onClick={(e) => { e.stopPropagation(); onUpdate(home.id, { viewed: !home.viewed }); }}
+              title={home.viewed ? "Mark as unviewed" : "Mark as viewed"}
+              className={`w-10 h-10 flex items-center justify-center rounded-xl border transition-colors ${home.viewed ? "bg-stone-100 border-stone-300 text-stone-500" : "bg-sky-50 border-sky-200 text-sky-500"}`}>
+              <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
+                {home.viewed ? <><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></> : <><path d="M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19m-6.72-1.07a3 3 0 11-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></>}
+              </svg>
+            </button>
             {home.url && (
               <a href={home.url} target="_blank" rel="noreferrer" title="Open listing"
                 className="w-10 h-10 flex items-center justify-center rounded-xl bg-sky-50 border border-sky-200 text-sky-600 hover:bg-sky-100 active:bg-sky-200 transition-colors">
@@ -3339,8 +3418,8 @@ function TourPlannerScreen({ homes, onOpenHome, myHome }) {
   const [browseSearch, setBrowseSearch] = useState("");
 
   // Persist
-  useEffect(() => { try { localStorage.setItem("cribs_tour_days", JSON.stringify(tourDays)); } catch {} }, [tourDays]);
-  useEffect(() => { try { localStorage.setItem("cribs_tour_notes", JSON.stringify(tourNotes)); } catch {} }, [tourNotes]);
+  useEffect(() => { try { localStorage.setItem("cribs_tour_days", JSON.stringify(tourDays)); } catch {} supaSetDebounced("cribs_tour_days", tourDays); }, [tourDays]);
+  useEffect(() => { try { localStorage.setItem("cribs_tour_notes", JSON.stringify(tourNotes)); } catch {} supaSetDebounced("cribs_tour_notes", tourNotes); }, [tourNotes]);
 
   const toggleHomeInDay = (dayKey, homeId) => {
     setTourDays(prev => {
@@ -4508,6 +4587,8 @@ function SettingsScreen({ fin, updateFin, liveRate, rateInfo, homes = [], setHom
           <h3 className="text-sm font-semibold text-stone-700 mb-2">Clear Enrichment Data</h3>
           <p className="text-xs text-stone-400 mb-3">Strip flood, crime, school, parks, and grocery data from all homes. Data will re-fetch automatically on next load.</p>
           <div className="flex flex-wrap gap-2">
+            <button onClick={() => { if (window.confirm("Reset viewed status on all homes?")) { const cleaned = homes.map(h => ({ ...h, viewed: false })); setHomes(cleaned); try { localStorage.setItem("cribs_homes", JSON.stringify(cleaned)); } catch {} } }}
+              className="text-xs font-medium text-violet-600 hover:text-violet-800 bg-violet-50 hover:bg-violet-100 px-3 py-1.5 rounded-lg border border-violet-200 transition-colors">Reset All Viewed</button>
             <button onClick={() => { if (window.confirm("Clear ALL enrichment data (flood, crime, school, parks, groceries) from every home?")) { const cleaned = homes.map(h => { const c = {...h}; delete c.flood; delete c.crime; delete c.school; delete c.parks; delete c.groceries; return c; }); setHomes(cleaned); try { localStorage.setItem("cribs_homes", JSON.stringify(cleaned)); } catch {} window.location.reload(); } }}
               className="text-xs font-medium text-stone-600 hover:text-stone-800 bg-stone-50 hover:bg-stone-100 px-3 py-1.5 rounded-lg border border-stone-200 transition-colors">Clear All Enrichment</button>
             <button onClick={() => { if (window.confirm("Clear parks data from all homes?")) { const cleaned = homes.map(h => { const c = {...h}; delete c.parks; return c; }); setHomes(cleaned); try { localStorage.setItem("cribs_homes", JSON.stringify(cleaned)); } catch {} window.location.reload(); } }}
@@ -4545,6 +4626,7 @@ function SettingsScreen({ fin, updateFin, liveRate, rateInfo, homes = [], setHom
               const existing = JSON.parse(localStorage.getItem("cribs_user_data") || "{}");
               const merged = { ...existing, ...userDataCache };
               localStorage.setItem("cribs_user_data", JSON.stringify(merged));
+              supaSetDebounced("cribs_user_data", merged);
             } catch {}
             setHomes([]);
             // Save immediately — don't wait for debounced persist
@@ -4679,12 +4761,59 @@ export default function CribsApp() {
     document.title = "CRIBS";
   }, []);
 
-  // Persist homes to localStorage (debounced 1s)
+  // Cloud sync: load from Supabase on mount
+  const [cloudStatus, setCloudStatus] = useState(SUPA_ENABLED ? "loading" : "off"); // "off" | "loading" | "synced" | "error"
+  useEffect(() => {
+    if (!SUPA_ENABLED) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        setCloudStatus("loading");
+        const cloud = await supaGetAll();
+        if (cancelled) return;
+        if (!cloud || Object.keys(cloud).length === 0) {
+          // Cloud is empty — push localStorage data up as initial seed
+          setCloudStatus("synced");
+          try { await supaSet("cribs_homes", homes); } catch {}
+          try { await supaSet("cribs_fin", fin); } catch {}
+          try { if (soldComps.length > 0) await supaSet("cribs_sold_comps", soldComps); } catch {}
+          try { const ud = JSON.parse(localStorage.getItem("cribs_user_data") || "{}"); if (Object.keys(ud).length > 0) await supaSet("cribs_user_data", ud); } catch {}
+          return;
+        }
+        // Cloud has data — use it as source of truth
+        try {
+          if (cloud.cribs_homes && Array.isArray(cloud.cribs_homes) && cloud.cribs_homes.length > 0) {
+            if (!cancelled) setHomes(cloud.cribs_homes);
+            try { localStorage.setItem("cribs_homes", JSON.stringify(cloud.cribs_homes)); } catch {}
+          }
+          if (cloud.cribs_fin && typeof cloud.cribs_fin === "object") {
+            if (!cancelled) setFin(prev => ({ ...prev, ...cloud.cribs_fin }));
+            try { localStorage.setItem("cribs_fin", JSON.stringify(cloud.cribs_fin)); } catch {}
+          }
+          if (cloud.cribs_sold_comps && Array.isArray(cloud.cribs_sold_comps)) {
+            if (!cancelled) setSoldComps(cloud.cribs_sold_comps);
+            try { localStorage.setItem("cribs_sold_comps", JSON.stringify(cloud.cribs_sold_comps)); } catch {}
+          }
+          if (cloud.cribs_user_data) {
+            try { localStorage.setItem("cribs_user_data", JSON.stringify(cloud.cribs_user_data)); } catch {}
+          }
+        } catch (e) { console.warn("CRIBS cloud parse error:", e); }
+        if (!cancelled) setCloudStatus("synced");
+      } catch (e) {
+        console.warn("CRIBS cloud sync error:", e);
+        if (!cancelled) setCloudStatus("error");
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  // Persist homes to localStorage (debounced 1s) + cloud
   const homesTimerRef = useRef(null);
   useEffect(() => {
     if (homesTimerRef.current) clearTimeout(homesTimerRef.current);
     homesTimerRef.current = setTimeout(() => {
       try { localStorage.setItem("cribs_homes", JSON.stringify(homes)); } catch {}
+      supaSetDebounced("cribs_homes", homes);
     }, 1000);
     return () => { if (homesTimerRef.current) clearTimeout(homesTimerRef.current); };
   }, [homes]);
@@ -4727,10 +4856,11 @@ export default function CribsApp() {
   const updateFin = (updates) => setFin((prev) => {
     const next = { ...prev, ...updates };
     try { localStorage.setItem("cribs_fin", JSON.stringify(next)); } catch {}
+    supaSetDebounced("cribs_fin", next);
     return next;
   });
   const maxBudget = useMemo(() => calcMaxBudget(fin), [fin]);
-  useEffect(() => { try { localStorage.setItem("cribs_sold_comps", JSON.stringify(soldComps)); } catch {} }, [soldComps]);
+  useEffect(() => { try { localStorage.setItem("cribs_sold_comps", JSON.stringify(soldComps)); } catch {} supaSetDebounced("cribs_sold_comps", soldComps); }, [soldComps]);
 
   useEffect(() => {
     let cancelled = false;
@@ -4892,6 +5022,7 @@ export default function CribsApp() {
     });
     // Save updated cache (with restored entries removed)
     try { localStorage.setItem("cribs_user_data", JSON.stringify(userDataCache)); } catch {}
+    supaSetDebounced("cribs_user_data", userDataCache);
     setImportDialog(null);
     // Trigger enrichment for newly imported homes
     enrichingRef.current = false;
@@ -4961,7 +5092,11 @@ export default function CribsApp() {
               <svg className="w-5 h-5" viewBox="0 0 24 24" fill="white"><path d="M12 3L2 12h3v8h5v-5h4v5h5v-8h3L12 3z"/></svg>
             </div>
             <h1 className="text-lg font-bold tracking-tight text-stone-800">CRIBS</h1>
-            <span className="text-[10px] text-stone-400 font-medium ml-1 self-end mb-0.5">v1.6.9</span>
+            <span className="text-[10px] text-stone-400 font-medium ml-1 self-end mb-0.5">v1.7.2</span>
+            {SUPA_ENABLED && (
+              <span title={cloudStatus === "synced" ? "Cloud sync active" : cloudStatus === "loading" ? "Syncing..." : cloudStatus === "error" ? "Cloud sync error — using local data" : "Cloud sync disabled"}
+                className={`w-2 h-2 rounded-full ml-1 self-end mb-1 flex-shrink-0 ${cloudStatus === "synced" ? "bg-emerald-400" : cloudStatus === "loading" ? "bg-amber-400 animate-pulse" : cloudStatus === "error" ? "bg-red-400" : "bg-stone-300"}`} />
+            )}
           </button>
           <nav className="flex gap-1 bg-stone-100 rounded-lg p-0.5 border border-stone-200">
             <button onClick={goList} className={`px-4 py-2 text-sm font-medium rounded-md transition-colors ${screen === "list" || screen === "detail" ? "bg-white text-sky-600 shadow-sm" : "text-stone-500 hover:text-stone-700"}`}>Homes</button>
