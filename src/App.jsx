@@ -5013,8 +5013,12 @@ export default function CribsApp() {
     if (enrichingRef.current) return;
     // Wait for cloud sync to finish before enriching — avoids duplicate work across devices
     if (cloudStatus === "loading") return;
-    // Skip if all homes already have data
-    const needsEnrich = homes.filter(h => !h.flood || !h.crime || !h.school || !h.parks || !h.groceries || !h.appraisal);
+    // Skip if all homes already have data or were already attempted
+    const needsEnrich = homes.filter(h => {
+      // If enrichment was attempted within the last 24 hours, skip even if some fields are missing
+      if (h.enrichedAt && (Date.now() - h.enrichedAt) < 86400000) return false;
+      return !h.flood || !h.crime || !h.school || !h.parks || !h.groceries || !h.appraisal;
+    });
     if (needsEnrich.length === 0) { setEnrichDone(true); return; }
     enrichingRef.current = true;
     setEnrichProgress({ done: 0, total: needsEnrich.length });
@@ -5058,7 +5062,10 @@ export default function CribsApp() {
             if (type === "appraisal" && data?.appraisalValue) updates.appraisal = { value: data.appraisalValue, year: data.appraisalYear, source: data.source };
           }
           if (Object.keys(updates).length > 0) {
-            setHomes(prev => prev.map(ph => ph.id === h.id ? { ...ph, ...updates } : ph));
+            setHomes(prev => prev.map(ph => ph.id === h.id ? { ...ph, ...updates, enrichedAt: Date.now() } : ph));
+          } else {
+            // Even if all APIs failed, mark as attempted so we don't retry every page load
+            setHomes(prev => prev.map(ph => ph.id === h.id ? { ...ph, enrichedAt: Date.now() } : ph));
           }
         } catch (e) {
           // Skip this home on error, continue to next
@@ -5213,7 +5220,7 @@ export default function CribsApp() {
               <svg className="w-5 h-5" viewBox="0 0 24 24" fill="white"><path d="M12 3L2 12h3v8h5v-5h4v5h5v-8h3L12 3z"/></svg>
             </div>
             <h1 className="text-lg font-bold tracking-tight text-stone-800">CRIBS</h1>
-            <span className="text-[10px] text-stone-400 font-medium ml-1 self-end mb-0.5">v1.8.4</span>
+            <span className="text-[10px] text-stone-400 font-medium ml-1 self-end mb-0.5">v1.8.5</span>
             {SUPA_ENABLED && (
               <span title={cloudStatus === "synced" ? "Cloud sync active" : cloudStatus === "loading" ? "Syncing..." : cloudStatus === "error" ? "Cloud sync error — using local data" : "Cloud sync disabled"}
                 className={`w-2 h-2 rounded-full ml-1 self-end mb-1 flex-shrink-0 ${cloudStatus === "synced" ? "bg-emerald-400" : cloudStatus === "loading" ? "bg-amber-400 animate-pulse" : cloudStatus === "error" ? "bg-red-400" : "bg-stone-300"}`} />
@@ -5238,7 +5245,7 @@ export default function CribsApp() {
         {screen === "detail" && activeHome && <ErrorBoundary><HomeDetailScreen home={activeHome} onBack={goList} onUpdate={updateHome} onDelete={(id) => { const found = homes.find(x => x.id === id); if (found) trackDeletion(found.address); setHomes((p) => p.filter((x) => x.id !== id)); }} compareList={compareList} toggleCompare={toggleCompare} fin={fin} navList={navList} onNavigate={navigateHome} allHomes={homes} soldComps={soldComps} onFilterBySchool={(name) => { setSchoolFilter(name); setScreen("list"); }} maxBudget={maxBudget} /></ErrorBoundary>}
         {screen === "compare" && <CompareScreen homes={homes} compareList={compareList} toggleCompare={toggleCompare} clearCompare={() => setCompareList([])} onOpenHome={openHome} fin={fin} />}
         {screen === "tours" && <TourPlannerScreen homes={homes} onOpenHome={openHome} myHome={fin.myHome} />}
-        {screen === "settings" && <SettingsScreen fin={fin} updateFin={updateFin} liveRate={liveRate} rateInfo={rateInfo} homes={homes} setHomes={setHomes} soldComps={soldComps} setSoldComps={setSoldComps} darkMode={darkMode} setDarkMode={setDarkMode} onTriggerEnrich={() => { enrichingRef.current = false; setEnrichDone(false); setEnrichProgress({ done: 0, total: 0 }); setEnrichTrigger(t => t + 1); }} enrichDone={enrichDone} />}
+        {screen === "settings" && <SettingsScreen fin={fin} updateFin={updateFin} liveRate={liveRate} rateInfo={rateInfo} homes={homes} setHomes={setHomes} soldComps={soldComps} setSoldComps={setSoldComps} darkMode={darkMode} setDarkMode={setDarkMode} onTriggerEnrich={() => { enrichingRef.current = false; setEnrichDone(false); setEnrichProgress({ done: 0, total: 0 }); setHomes(prev => prev.map(h => { const c = {...h}; delete c.enrichedAt; return c; })); setEnrichTrigger(t => t + 1); }} enrichDone={enrichDone} />}
       </div>
 
       {/* Import Dialog */}
