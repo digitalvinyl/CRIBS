@@ -381,57 +381,79 @@ async function fetchCrime(address, city, state, zip, lat, lng) {
 }
 
 async function fetchSchool(address, city, state, zip, lat, lng) {
-  // NCES EDGE 2022-23 ArcGIS REST API — find nearest elementary schools
   if (!lat || !lng) return null;
+
+  // Helper
+  const hav = (lat1, lng1, lat2, lng2) => {
+    const R = 3958.8, dLat = (lat2-lat1)*Math.PI/180, dLng = (lng2-lng1)*Math.PI/180;
+    const a = Math.sin(dLat/2)**2 + Math.cos(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*Math.sin(dLng/2)**2;
+    return R*2*Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+  };
+
+  // Try 1: NCES ADMINDATA 2022-23 (has enrollment, student-teacher ratio)
   try {
-    const fields = "SCH_NAME,LEA_NAME,GSLO,GSHI,SCHOOL_LEVEL,MEMBER,STUTERATIO,FTE,TOTFRL,LATCOD,LONCOD,CHARTER_TEXT,VIRTUAL,LSTREET1,LCITY,LZIP,STATUS";
-    const where = encodeURIComponent("SCHOOL_LEVEL='Elementary' AND STATUS='1'");
-    const url = `https://nces.ed.gov/opengis/rest/services/K12_School_Locations/EDGE_ADMINDATA_PUBLICSCH_2223/MapServer/0/query?geometry=${lng},${lat}&geometryType=esriGeometryPoint&inSR=4269&spatialRel=esriSpatialRelIntersects&distance=8046&units=esriSRUnit_Meter&where=${where}&outFields=${fields}&returnGeometry=false&resultRecordCount=5&f=json`;
-    const res = await fetch(url, { signal: AbortSignal.timeout(12000) });
-    const data = await res.json();
-    if (data.features?.length > 0) {
-      // Calculate distances and pick nearest
-      const toRad = (d) => d * Math.PI / 180;
-      const haversine = (lat1, lng1, lat2, lng2) => {
-        const R = 3958.8; // miles
-        const dLat = toRad(lat2 - lat1), dLng = toRad(lng2 - lng1);
-        const a = Math.sin(dLat/2)**2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng/2)**2;
-        return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-      };
-      const schools = data.features
-        .map(f => ({ ...f.attributes, dist: haversine(lat, lng, f.attributes.LATCOD, f.attributes.LONCOD) }))
-        .filter(s => s.VIRTUAL !== 'Virtual' && s.CHARTER_TEXT !== 'Yes')
-        .sort((a, b) => a.dist - b.dist);
-      if (schools.length === 0) return null;
-      const s = schools[0];
-      const enrollment = s.MEMBER || null;
-      const str = s.STUTERATIO || (s.FTE && enrollment ? Math.round(enrollment / s.FTE) : null);
-      const frlPct = (enrollment && s.TOTFRL) ? Math.round(s.TOTFRL / enrollment * 100) : null;
-      // Derive tier from student-teacher ratio
-      let tier = "good";
-      if (str && str <= 14) tier = "great";
-      else if (str && str > 20) tier = "below";
-      // Grade range
-      const gradeMap = { 'PK': 'PK', 'KG': 'K', '01': '1', '02': '2', '03': '3', '04': '4', '05': '5', '06': '6', '07': '7', '08': '8' };
-      const lo = gradeMap[s.GSLO] || s.GSLO || '';
-      const hi = gradeMap[s.GSHI] || s.GSHI || '';
-      const grades = lo && hi ? `${lo}-${hi}` : null;
-      return {
-        schoolName: s.SCH_NAME || null,
-        district: s.LEA_NAME || null,
-        rating: null,
-        ratingSource: null,
-        tier,
-        grades,
-        enrollment,
-        distance: s.dist ? s.dist.toFixed(1) + " mi" : null,
-        nicheGrade: null,
-        testScores: null,
-        studentTeacherRatio: str ? Math.round(str) : null,
-        notes: `NCES CCD 2022-23${frlPct != null ? " · " + frlPct + "% free/reduced lunch" : ""}`,
-      };
+    const fields = "SCH_NAME,LEA_NAME,GSLO,GSHI,SCHOOL_LEVEL,MEMBER,STUTERATIO,FTE,TOTFRL,LATCOD,LONCOD,CHARTER_TEXT,VIRTUAL,STATUS";
+    const url = `https://nces.ed.gov/opengis/rest/services/K12_School_Locations/EDGE_ADMINDATA_PUBLICSCH_2223/MapServer/0/query?geometry=${lng},${lat}&geometryType=esriGeometryPoint&inSR=4269&spatialRel=esriSpatialRelIntersects&distance=8046&units=esriSRUnit_Meter&outFields=${fields}&returnGeometry=false&resultRecordCount=10&f=json`;
+    const res = await fetch(url, { signal: AbortSignal.timeout(10000) });
+    if (res.ok) {
+      const data = await res.json();
+      if (data.features?.length > 0) {
+        const schools = data.features
+          .map(f => ({ ...f.attributes, dist: f.attributes.LATCOD ? hav(lat, lng, f.attributes.LATCOD, f.attributes.LONCOD) : 999 }))
+          .filter(s => {
+            const lvl = (s.SCHOOL_LEVEL || "").toLowerCase();
+            const status = (s.STATUS || "").toString();
+            const isOpen = status === "1" || status.toLowerCase().includes("open") || status === "";
+            const isElementary = lvl.includes("elem") || lvl.includes("primary") || lvl === "1";
+            return isOpen && isElementary && (s.VIRTUAL || "").toLowerCase() !== "virtual" && (s.CHARTER_TEXT || "").toLowerCase() !== "yes";
+          })
+          .sort((a, b) => a.dist - b.dist);
+        if (schools.length > 0) {
+          const s = schools[0];
+          const enrollment = s.MEMBER || null;
+          const str = s.STUTERATIO || (s.FTE && enrollment ? Math.round(enrollment / s.FTE) : null);
+          const frlPct = (enrollment && s.TOTFRL) ? Math.round(s.TOTFRL / enrollment * 100) : null;
+          let tier = "good";
+          if (str && str <= 14) tier = "great";
+          else if (str && str > 20) tier = "below";
+          const gradeMap = { 'PK': 'PK', 'KG': 'K', '01': '1', '02': '2', '03': '3', '04': '4', '05': '5', '06': '6', '07': '7', '08': '8' };
+          const lo = gradeMap[s.GSLO] || s.GSLO || '';
+          const hi = gradeMap[s.GSHI] || s.GSHI || '';
+          const grades = lo && hi ? `${lo}-${hi}` : null;
+          return {
+            schoolName: s.SCH_NAME || null, district: s.LEA_NAME || null, rating: null, ratingSource: "NCES CCD 2022-23",
+            tier, grades, enrollment, distance: s.dist < 999 ? s.dist.toFixed(1) + " mi" : null,
+            nicheGrade: null, testScores: null, studentTeacherRatio: str ? Math.round(str) : null,
+            notes: `NCES CCD 2022-23${frlPct != null ? " · " + frlPct + "% free/reduced lunch" : ""}`,
+          };
+        }
+      }
     }
-  } catch (e) { /* NCES query failed */ }
+  } catch (e) { /* ADMINDATA failed, try geocode fallback */ }
+
+  // Try 2: NCES GEOCODE 2023-24 (newer data but fewer fields — no enrollment/ratio)
+  try {
+    const url2 = `https://nces.ed.gov/opengis/rest/services/K12_School_Locations/EDGE_GEOCODE_PUBLICSCH_2324/MapServer/0/query?geometry=${lng},${lat}&geometryType=esriGeometryPoint&inSR=4269&spatialRel=esriSpatialRelIntersects&distance=8046&units=esriSRUnit_Meter&outFields=NAME,NMCNTY,LAT,LON&returnGeometry=false&resultRecordCount=5&f=json`;
+    const res2 = await fetch(url2, { signal: AbortSignal.timeout(10000) });
+    if (res2.ok) {
+      const data2 = await res2.json();
+      if (data2.features?.length > 0) {
+        const schools = data2.features
+          .map(f => ({ ...f.attributes, dist: f.attributes.LAT ? hav(lat, lng, f.attributes.LAT, f.attributes.LON) : 999 }))
+          .sort((a, b) => a.dist - b.dist);
+        if (schools.length > 0) {
+          const s = schools[0];
+          return {
+            schoolName: s.NAME || null, district: s.NMCNTY ? s.NMCNTY + " County" : null, rating: null, ratingSource: "NCES 2023-24",
+            tier: "good", grades: null, enrollment: null, distance: s.dist < 999 ? s.dist.toFixed(1) + " mi" : null,
+            nicheGrade: null, testScores: null, studentTeacherRatio: null,
+            notes: "NCES Geocode 2023-24 (limited data — enrollment unavailable)",
+          };
+        }
+      }
+    }
+  } catch (e) { /* both failed */ }
+
   return null;
 }
 
@@ -1363,7 +1385,7 @@ function HomeListScreen({ homes, setHomes, onOpenHome, compareList, toggleCompar
                     </button>
                     <button onClick={(e) => { e.stopPropagation(); setHomes((p) => p.map((x) => x.id === h.id ? { ...x, viewed: !x.viewed } : x)); }}
                       title={h.viewed ? "Mark as not toured" : "Mark as toured in person"}
-                      className={`mt-0.5 ${h.viewed ? "text-stone-400 hover:text-stone-600" : "text-stone-200 hover:text-stone-400"} transition-colors`}>
+                      className={`mt-0.5 ${h.viewed ? "text-teal-500 hover:text-teal-700" : "text-stone-200 hover:text-stone-400"} transition-colors`}>
                       <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
                     </button>
                   </div>
@@ -1474,7 +1496,7 @@ function HomeListScreen({ homes, setHomes, onOpenHome, compareList, toggleCompar
                   <td className="py-2.5 px-3">
                     <div className="flex items-center gap-2">
                       <span className={`font-medium truncate max-w-[220px] ${h.viewed ? "text-stone-500" : "text-stone-800"}`}>{h.address || "—"}</span>
-                      {h.viewed && <svg className="w-3.5 h-3.5 text-stone-400 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>}
+                      {h.viewed && <svg className="w-3.5 h-3.5 text-teal-500 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>}
                       <StatusBadge status={h.status} />
                       {h.notes && <span className="w-1.5 h-1.5 rounded-full bg-amber-400 flex-shrink-0" title="Has notes" />}
                     </div>
@@ -2005,7 +2027,7 @@ function HomeDetailScreen({ home, onBack, onUpdate, onDelete, compareList, toggl
             <StatusBadge status={home.status} />
             <button onClick={(e) => { e.stopPropagation(); onUpdate(home.id, { viewed: !home.viewed }); }}
               title={home.viewed ? "Mark as not toured" : "Mark as toured in person"}
-              className={`w-10 h-10 flex items-center justify-center rounded-xl border transition-colors ${home.viewed ? "bg-stone-100 border-stone-300 text-stone-500" : "bg-sky-50 border-sky-200 text-sky-500"}`}>
+              className={`w-10 h-10 flex items-center justify-center rounded-xl border transition-colors ${home.viewed ? "bg-teal-50 border-teal-300 text-teal-600" : "bg-stone-50 border-stone-200 text-stone-300"}`}>
               <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
                 {home.viewed ? <><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></> : <><path d="M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19m-6.72-1.07a3 3 0 11-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></>}
               </svg>
@@ -3665,7 +3687,7 @@ function TourPlannerScreen({ homes, onOpenHome, myHome }) {
                                 <div className="min-w-0">
                                   <div className="flex items-center gap-1.5">
                                     <button onClick={() => onOpenHome(h.id)} className="text-base font-bold text-stone-800 hover:text-sky-600 transition-colors truncate text-left">{h.address}</button>
-                                    {h.viewed && <svg className="w-4 h-4 text-stone-400 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>}
+                                    {h.viewed && <svg className="w-4 h-4 text-teal-500 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>}
                                   </div>
                                   <div className="text-xs text-stone-400 mt-0.5">{[h.city, h.zip].filter(Boolean).join(" ")}</div>
                                 </div>
@@ -3740,7 +3762,7 @@ function TourPlannerScreen({ homes, onOpenHome, myHome }) {
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center gap-1.5">
                             <button onClick={() => onOpenHome(h.id)} className="text-sm font-semibold text-stone-700 hover:text-sky-600 truncate text-left">{h.address}</button>
-                            {h.viewed && <svg className="w-3.5 h-3.5 text-stone-400 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>}
+                            {h.viewed && <svg className="w-3.5 h-3.5 text-teal-500 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>}
                           </div>
                           <div className="flex items-center gap-2 mt-0.5 flex-wrap">
                             <span className="text-[10px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-1.5 py-0 rounded">{formatOHTime(h.ohStart)}{h.ohEnd ? " – " + formatOHTime(h.ohEnd) : ""}</span>
@@ -3811,7 +3833,7 @@ function TourPlannerScreen({ homes, onOpenHome, myHome }) {
                           <div className="flex items-center justify-between gap-1">
                             <button onClick={() => onOpenHome(h.id)} className="text-xs font-bold text-stone-700 hover:text-sky-600 truncate text-left">{h.address}</button>
                             <div className="flex items-center gap-1 flex-shrink-0">
-                              {h.viewed && <svg className="w-3 h-3 text-stone-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>}
+                              {h.viewed && <svg className="w-3 h-3 text-teal-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>}
                               {h.favorite && <span className="text-[10px] text-rose-500">♥</span>}
                             </div>
                           </div>
@@ -4647,7 +4669,7 @@ function SettingsScreen({ fin, updateFin, liveRate, rateInfo, homes = [], setHom
         <div className="bg-white border border-orange-200 rounded-2xl p-4 anim-fade-up" style={{ animationDelay: '320ms' }}>
           <h3 className="text-sm font-semibold text-orange-700 mb-2">Reset Data</h3>
           <p className="text-xs text-stone-400 mb-3">Clear browser cache and reload the default 52 homes with all enrichment data. Your settings will be preserved.</p>
-          <button onClick={() => { if (window.confirm("Reset all home data to defaults? Your financial settings will be preserved, but any custom notes, ratings, and viewed flags will be lost.")) { localStorage.removeItem("cribs_homes"); localStorage.removeItem("cribs_live_rate"); window.location.reload(); } }}
+          <button onClick={() => { if (window.confirm("Reset all home data to defaults? Your financial settings will be preserved, but any custom notes, ratings, and toured flags will be lost.")) { localStorage.removeItem("cribs_homes"); localStorage.removeItem("cribs_live_rate"); window.location.reload(); } }}
             className="text-xs font-medium text-orange-600 hover:text-orange-700 bg-orange-50 hover:bg-orange-100 px-3 py-1.5 rounded-lg border border-orange-200 transition-colors">Reset Home Data</button>
         </div>
       </div>
@@ -5063,10 +5085,6 @@ export default function CribsApp() {
     if (nextIdx < 0 || nextIdx >= navList.length) return;
     let nextHome = homes.find(h => h.id === navList[nextIdx]);
     if (nextHome) {
-      if (!nextHome.viewed) {
-        setHomes((prev) => prev.map((x) => x.id === nextHome.id ? { ...x, viewed: true } : x));
-        nextHome = { ...nextHome, viewed: true };
-      }
       setActiveHome(nextHome); window.scrollTo(0, 0);
     }
   };
@@ -5090,7 +5108,7 @@ export default function CribsApp() {
               <svg className="w-5 h-5" viewBox="0 0 24 24" fill="white"><path d="M12 3L2 12h3v8h5v-5h4v5h5v-8h3L12 3z"/></svg>
             </div>
             <h1 className="text-lg font-bold tracking-tight text-stone-800">CRIBS</h1>
-            <span className="text-[10px] text-stone-400 font-medium ml-1 self-end mb-0.5">v1.7.7</span>
+            <span className="text-[10px] text-stone-400 font-medium ml-1 self-end mb-0.5">v1.8.0</span>
             {SUPA_ENABLED && (
               <span title={cloudStatus === "synced" ? "Cloud sync active" : cloudStatus === "loading" ? "Syncing..." : cloudStatus === "error" ? "Cloud sync error — using local data" : "Cloud sync disabled"}
                 className={`w-2 h-2 rounded-full ml-1 self-end mb-1 flex-shrink-0 ${cloudStatus === "synced" ? "bg-emerald-400" : cloudStatus === "loading" ? "bg-amber-400 animate-pulse" : cloudStatus === "error" ? "bg-red-400" : "bg-stone-300"}`} />
