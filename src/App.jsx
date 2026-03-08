@@ -1266,12 +1266,12 @@ function HomeListScreen({ homes, setHomes, onOpenHome, compareList, toggleCompar
   const sortOptions = [
     { key: "value", label: "Value" },
     { key: "price", label: "Price" },
-    { key: "ppsf", label: "$/Sqft" },
+    { key: "ppsf", label: "$/SF" },
     { key: "sqft", label: "Size" },
-    { key: "schoolRating", icon: <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M4.26 10.147a60.438 60.438 0 00-.491 6.347A48.62 48.62 0 0112 20.904a48.62 48.62 0 018.232-4.41 60.46 60.46 0 00-.491-6.347m-15.482 0a50.636 50.636 0 00-2.658-.813A59.906 59.906 0 0112 3.493a59.903 59.903 0 0110.399 5.84c-.896.248-1.783.52-2.658.814m-15.482 0A50.717 50.717 0 0112 13.489a50.702 50.702 0 017.74-3.342M6.75 15v-3.75m0 0h-.008v.008H6.75V11.25z" /></svg> },
-    { key: "floodRisk", icon: <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2c0 0-5.5 7.5-5.5 11.5C6.5 16.54 8.96 19 12 19s5.5-2.46 5.5-5.5C17.5 9.5 12 2 12 2z"/></svg> },
-    { key: "nearestPark", icon: <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C8.5 2 6 5 6 8c0 2 1.5 3.5 3 4.5V22h6V12.5c1.5-1 3-2.5 3-4.5 0-3-2.5-6-6-6z"/></svg> },
-    { key: "distance", label: "Nearest" },
+    { key: "schoolRating", label: "School" },
+    { key: "floodRisk", label: "Flood" },
+    { key: "nearestPark", label: "Park" },
+    { key: "distance", label: "Near Me" },
   ];
 
   if (homes.length === 0) return (
@@ -1288,7 +1288,7 @@ function HomeListScreen({ homes, setHomes, onOpenHome, compareList, toggleCompar
   );
 
   return (
-    <div className="p-4 md:p-6 overflow-hidden">
+    <div className="p-4 md:p-6 overflow-hidden pb-24 md:pb-6">
       {/* Stats */}
       <div className="flex gap-2 mb-4 overflow-x-auto pb-0.5 -mx-1 px-1">
         {[
@@ -1307,17 +1307,21 @@ function HomeListScreen({ homes, setHomes, onOpenHome, compareList, toggleCompar
         ))}
       </div>
 
-      {/* Filters + Import */}
-      <div className="flex flex-wrap gap-2 mb-3 items-center">
-        <div className="flex-1 min-w-0 relative">
+      {/* Search */}
+      <div className="mb-2.5">
+        <div className="relative">
           <SearchIcon className="absolute left-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-stone-400 pointer-events-none" />
           <input type="text" placeholder="Search address, city, zip..." value={filter} onChange={(e) => setFilter(e.target.value)}
-            className="w-full bg-white border border-stone-200 rounded-lg pl-8 pr-3 py-2.5 text-sm text-stone-700 focus:outline-none focus:border-sky-400 focus:ring-2 focus:ring-sky-100" />
+            className="w-full bg-white border border-stone-200 rounded-xl pl-8 pr-3 py-2.5 text-sm text-stone-700 focus:outline-none focus:border-sky-400 focus:ring-2 focus:ring-sky-100" />
         </div>
-        <div className="flex gap-0.5 bg-stone-100 rounded-lg p-0.5 border border-stone-200 flex-shrink-0">
-          {[["all", "All"], ["favorites", "★"], ["viewed", "Toured"], ["not_viewed", "Not Toured"]].map(([v, l]) => (
+      </div>
+
+      {/* Filters + Import */}
+      <div className="flex items-center gap-2 mb-3">
+        <div className="flex gap-1 bg-stone-100 rounded-xl p-1 border border-stone-200 flex-1 min-w-0">
+          {[["all", "All"], ["favorites", "★ Faves"], ["viewed", "Toured"], ["not_viewed", "New"]].map(([v, l]) => (
             <button key={v} onClick={() => setViewedFilter(v)}
-              className={`px-3 py-2 text-xs font-medium rounded-md transition-colors ${viewedFilter === v ? "bg-white text-sky-600 shadow-sm" : "text-stone-500"}`}>{l}</button>
+              className={`flex-1 px-2 py-2 text-xs font-medium rounded-lg transition-colors text-center ${viewedFilter === v ? "bg-white text-sky-600 shadow-sm" : "text-stone-500"}`}>{l}</button>
           ))}
         </div>
         <DropZone onImport={onImport} compact />
@@ -1335,14 +1339,14 @@ function HomeListScreen({ homes, setHomes, onOpenHome, compareList, toggleCompar
       )}
 
       {/* Mobile sort pills */}
-      <div className="md:hidden flex gap-1.5 mb-3 overflow-x-auto pb-0.5">
+      <div className="md:hidden flex gap-1.5 mb-3 overflow-x-auto pb-1 -mx-1 px-1">
         {sortOptions.map((opt) => (
           <button key={opt.key} onClick={() => {
             if (opt.key === "distance") { requestLocation(); setSortKey("distance"); setSortAsc(true); }
             else toggleSort(opt.key);
           }}
-            className={`${opt.icon ? "min-w-[44px] px-2.5" : "px-2.5"} py-1.5 text-xs font-medium rounded-lg border transition-colors flex-shrink-0 flex items-center justify-center gap-1 ${sortKey === opt.key ? "bg-sky-50 border-sky-200 text-sky-600" : "bg-white border-stone-200 text-stone-500"}`}>
-            {opt.icon || opt.label} {sortKey === opt.key ? (opt.key === "distance" ? (locLoading ? "..." : "📍") : (sortAsc ? "↑" : "↓")) : ""}
+            className={`px-3 py-2 text-xs font-medium rounded-xl border transition-colors flex-shrink-0 ${sortKey === opt.key ? "bg-sky-50 border-sky-300 text-sky-700 shadow-sm" : "bg-white border-stone-200 text-stone-500"}`}>
+            {opt.label} {sortKey === opt.key ? (opt.key === "distance" ? (locLoading ? "..." : "📍") : (sortAsc ? "↑" : "↓")) : ""}
           </button>
         ))}
       </div>
@@ -1356,12 +1360,12 @@ function HomeListScreen({ homes, setHomes, onOpenHome, compareList, toggleCompar
           return (
             <div key={h.id} onClick={() => onOpenHome(h, filtered)}
               style={{ animationDelay: `${filtered.indexOf(h) * 40}ms` }}
-              className={`anim-fade-up rounded-xl border shadow-sm active:scale-[0.99] transition-transform cursor-pointer card-hover ${!h.viewed ? "bg-white border-l-[3px] border-l-sky-400 border-t border-r border-b border-t-stone-200 border-r-stone-200 border-b-stone-200 ring-1 ring-sky-100" : "bg-stone-50/70 border-stone-200"}`}>
+              className={`anim-fade-up rounded-xl border shadow-sm active:scale-[0.99] transition-transform cursor-pointer card-hover bg-white ${h.viewed ? "border-l-[3px] border-l-teal-400 border-t border-r border-b border-t-stone-200 border-r-stone-200 border-b-stone-200" : "border-stone-200"}`}>
               <div className="p-3.5">
                 <div className="flex items-start justify-between gap-2 mb-1">
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-1.5 flex-wrap">
-                      <p className={`font-semibold truncate text-[15px] ${h.viewed ? "text-stone-500" : "text-stone-800"}`}>{h.address || "—"}</p>
+                      <p className="font-semibold truncate text-[15px] text-stone-800">{h.address || "—"}</p>
                       <StatusBadge status={h.status} />
                       {h.nextOpenHouseStart && parseOHDate(h.nextOpenHouseStart) >= new Date(new Date().getFullYear(), new Date().getMonth(), new Date().getDate()) && (
                         <span className="text-[10px] font-bold text-emerald-600 bg-emerald-50 border border-emerald-200 px-1.5 py-0.5 rounded-md uppercase tracking-wide">Open House</span>
@@ -1485,7 +1489,7 @@ function HomeListScreen({ homes, setHomes, onOpenHome, compareList, toggleCompar
               const monthly = h.price ? quickMonthly(h.price, fin.cash, h.hoa || 0, fin.rate, fin.closing, hTax2, h) : 0;
               const monthlyTax = h.price ? Math.round((h.price * hTax2 / 100) / 12) : 0;
               return (
-                <tr key={h.id} onClick={() => onOpenHome(h, filtered)} className={`group cursor-pointer transition-colors duration-200 hover:shadow-sm ${h.viewed ? "bg-stone-50/50 hover:bg-stone-100/50" : "bg-white hover:bg-sky-50/30"}`}>
+                <tr key={h.id} onClick={() => onOpenHome(h, filtered)} className={`group cursor-pointer transition-colors duration-200 hover:shadow-sm bg-white hover:bg-sky-50/30 ${h.viewed ? "border-l-[3px] border-l-teal-400" : ""}`}>
                   <td className="py-2.5 px-3 text-center" onClick={(e) => e.stopPropagation()}>
                     <button onClick={() => setHomes((p) => p.map((x) => x.id === h.id ? { ...x, favorite: !x.favorite } : x))}
                       title={h.favorite ? "Unfavorite" : "Favorite"}
@@ -1495,7 +1499,7 @@ function HomeListScreen({ homes, setHomes, onOpenHome, compareList, toggleCompar
                   </td>
                   <td className="py-2.5 px-3">
                     <div className="flex items-center gap-2">
-                      <span className={`font-medium truncate max-w-[220px] ${h.viewed ? "text-stone-500" : "text-stone-800"}`}>{h.address || "—"}</span>
+                      <span className="font-medium truncate max-w-[220px] text-stone-800">{h.address || "—"}</span>
                       {h.viewed && <svg className="w-3.5 h-3.5 text-teal-500 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>}
                       <StatusBadge status={h.status} />
                       {h.notes && <span className="w-1.5 h-1.5 rounded-full bg-amber-400 flex-shrink-0" title="Has notes" />}
@@ -5108,7 +5112,7 @@ export default function CribsApp() {
               <svg className="w-5 h-5" viewBox="0 0 24 24" fill="white"><path d="M12 3L2 12h3v8h5v-5h4v5h5v-8h3L12 3z"/></svg>
             </div>
             <h1 className="text-lg font-bold tracking-tight text-stone-800">CRIBS</h1>
-            <span className="text-[10px] text-stone-400 font-medium ml-1 self-end mb-0.5">v1.8.0</span>
+            <span className="text-[10px] text-stone-400 font-medium ml-1 self-end mb-0.5">v1.8.1</span>
             {SUPA_ENABLED && (
               <span title={cloudStatus === "synced" ? "Cloud sync active" : cloudStatus === "loading" ? "Syncing..." : cloudStatus === "error" ? "Cloud sync error — using local data" : "Cloud sync disabled"}
                 className={`w-2 h-2 rounded-full ml-1 self-end mb-1 flex-shrink-0 ${cloudStatus === "synced" ? "bg-emerald-400" : cloudStatus === "loading" ? "bg-amber-400 animate-pulse" : cloudStatus === "error" ? "bg-red-400" : "bg-stone-300"}`} />
