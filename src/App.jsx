@@ -308,7 +308,7 @@ async function fetchFloodZone(address, city, state, zip, lat, lng) {
   }
   if (!fLat || !fLng) return null;
   try {
-    const url = `https://hazards.fema.gov/gis/nfhl/rest/services/public/NFHL/MapServer/28/query?geometry=${fLng},${fLat}&geometryType=esriGeometryPoint&inSR=4326&spatialRel=esriSpatialRelIntersects&outFields=FLD_ZONE,ZONE_SUBTY,SFHA_TF&returnGeometry=false&f=json`;
+    const url = `https://hazards.fema.gov/arcgis/rest/services/public/NFHL/MapServer/28/query?geometry=${fLng},${fLat}&geometryType=esriGeometryPoint&inSR=4326&spatialRel=esriSpatialRelIntersects&outFields=FLD_ZONE,ZONE_SUBTY,SFHA_TF&returnGeometry=false&f=json`;
     const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
     const data = await res.json();
     if (data.features?.length > 0) {
@@ -1271,7 +1271,7 @@ function HomeListScreen({ homes, setHomes, onOpenHome, compareList, toggleCompar
       <div className="flex gap-2 mb-4 overflow-x-auto pb-0.5 -mx-1 px-1">
         {[
           { label: "Listings", value: viewedFilter !== "all" || filter || schoolFilter ? `${stats.count} / ${stats.total}` : stats.count, color: "text-sky-600" },
-          { label: "Viewed", value: `${stats.viewed}/${stats.count}`, color: "text-teal-600" },
+          { label: "Toured", value: `${stats.viewed}/${stats.count}`, color: "text-teal-600" },
           ...(stats.inBudget != null ? [{ label: "In Budget", value: `${stats.inBudget}/${stats.count}`, color: stats.inBudget > 0 ? "text-emerald-600" : "text-orange-600" }] : []),
           { label: "Avg Price", value: fmt(stats.avg), color: "text-stone-800" },
           { label: "30yr Rate", value: rateInfo.loading ? "..." : `${fin.rate}%`, color: rateInfo.loading ? "text-stone-400" : "text-sky-600", sub: rateInfo.loading ? "Fetching" : rateInfo.source === "default" ? "Default" : "Live" },
@@ -1293,7 +1293,7 @@ function HomeListScreen({ homes, setHomes, onOpenHome, compareList, toggleCompar
             className="w-full bg-white border border-stone-200 rounded-lg pl-8 pr-3 py-2.5 text-sm text-stone-700 focus:outline-none focus:border-sky-400 focus:ring-2 focus:ring-sky-100" />
         </div>
         <div className="flex gap-0.5 bg-stone-100 rounded-lg p-0.5 border border-stone-200 flex-shrink-0">
-          {[["all", "All"], ["favorites", "★"], ["viewed", "✓"], ["not_viewed", "New"]].map(([v, l]) => (
+          {[["all", "All"], ["favorites", "★"], ["viewed", "Toured"], ["not_viewed", "Not Toured"]].map(([v, l]) => (
             <button key={v} onClick={() => setViewedFilter(v)}
               className={`px-3 py-2 text-xs font-medium rounded-md transition-colors ${viewedFilter === v ? "bg-white text-sky-600 shadow-sm" : "text-stone-500"}`}>{l}</button>
           ))}
@@ -1362,7 +1362,7 @@ function HomeListScreen({ homes, setHomes, onOpenHome, compareList, toggleCompar
                       <StarIcon filled={h.favorite} className="w-5 h-5" />
                     </button>
                     <button onClick={(e) => { e.stopPropagation(); setHomes((p) => p.map((x) => x.id === h.id ? { ...x, viewed: !x.viewed } : x)); }}
-                      title={h.viewed ? "Mark as unviewed" : "Mark as viewed"}
+                      title={h.viewed ? "Mark as not toured" : "Mark as toured in person"}
                       className={`mt-0.5 ${h.viewed ? "text-stone-400 hover:text-stone-600" : "text-stone-200 hover:text-stone-400"} transition-colors`}>
                       <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
                     </button>
@@ -1378,7 +1378,7 @@ function HomeListScreen({ homes, setHomes, onOpenHome, compareList, toggleCompar
                   <span className="flex-1" />
                   {avgRating(h.ratings) > 0 && <span className="text-amber-500 font-semibold tabular-nums">{avgRating(h.ratings).toFixed(1)} ★</span>}
                   {h.notes && <span className="w-2 h-2 rounded-full bg-amber-400" title="Has notes" />}
-                  {h.viewed && <span className="text-teal-600 font-semibold bg-teal-50 px-1.5 py-0.5 rounded text-[10px]">Viewed</span>}
+                  {h.viewed && <span className="text-teal-600 font-semibold bg-teal-50 px-1.5 py-0.5 rounded text-[10px]">Toured ✓</span>}
                 </div>
                 {(h.flood || h.crime || h.school) && (
                   <div className="flex items-center gap-3 mt-2 pt-2 border-t border-stone-100 flex-wrap">
@@ -2004,7 +2004,7 @@ function HomeDetailScreen({ home, onBack, onUpdate, onDelete, compareList, toggl
             </button>
             <StatusBadge status={home.status} />
             <button onClick={(e) => { e.stopPropagation(); onUpdate(home.id, { viewed: !home.viewed }); }}
-              title={home.viewed ? "Mark as unviewed" : "Mark as viewed"}
+              title={home.viewed ? "Mark as not toured" : "Mark as toured in person"}
               className={`w-10 h-10 flex items-center justify-center rounded-xl border transition-colors ${home.viewed ? "bg-stone-100 border-stone-300 text-stone-500" : "bg-sky-50 border-sky-200 text-sky-500"}`}>
               <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
                 {home.viewed ? <><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></> : <><path d="M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19m-6.72-1.07a3 3 0 11-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></>}
@@ -3698,7 +3698,7 @@ function TourPlannerScreen({ homes, onOpenHome, myHome }) {
                                 {h.hoa > 0 && <span className="text-[10px] font-semibold text-stone-500 bg-stone-100 px-2 py-0.5 rounded-md">HOA ${h.hoa}/mo</span>}
                                 {h.dom != null && <span className="text-[10px] font-semibold text-stone-500 bg-stone-100 px-2 py-0.5 rounded-md">{h.dom}d on market</span>}
                                 {h.favorite && <span className="text-[10px] font-bold text-rose-600 bg-rose-50 border border-rose-200 px-2 py-0.5 rounded-md">♥ Favorite</span>}
-                                {h.viewed && <span className="text-[10px] font-semibold text-stone-500 bg-stone-100 border border-stone-200 px-2 py-0.5 rounded-md flex items-center gap-1"><svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>Viewed</span>}
+                                {h.viewed && <span className="text-[10px] font-semibold text-stone-500 bg-stone-100 border border-stone-200 px-2 py-0.5 rounded-md flex items-center gap-1"><svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>Toured ✓</span>}
                               </div>
 
                               {/* Inline notes */}
@@ -3950,7 +3950,7 @@ function CompareScreen({ homes, compareList, toggleCompare, clearCompare, onOpen
       </button>
       <div className="flex gap-1.5 mt-2 flex-wrap items-center">
         {(() => { const vs = calcValueScore(h, homes); const color = vs >= 70 ? "text-teal-700 bg-teal-50" : vs >= 50 ? "text-amber-700 bg-amber-50" : "text-orange-600 bg-orange-50"; return <span className={`text-[10px] font-bold tabular-nums px-1.5 py-0.5 rounded ${color}`}>{vs} value</span>; })()}
-        {h.viewed && <span className="text-[10px] text-teal-600 font-bold bg-teal-50 px-1.5 py-0.5 rounded">Viewed</span>}
+        {h.viewed && <span className="text-[10px] text-teal-600 font-bold bg-teal-50 px-1.5 py-0.5 rounded">Toured ✓</span>}
         {avgRating(h.ratings) > 0 && <span className="text-xs text-amber-500 font-semibold">{avgRating(h.ratings).toFixed(1)} ★</span>}
         <StatusBadge status={h.status} />
       </div>
@@ -4587,8 +4587,8 @@ function SettingsScreen({ fin, updateFin, liveRate, rateInfo, homes = [], setHom
           <h3 className="text-sm font-semibold text-stone-700 mb-2">Clear Enrichment Data</h3>
           <p className="text-xs text-stone-400 mb-3">Strip flood, crime, school, parks, and grocery data from all homes. Data will re-fetch automatically on next load.</p>
           <div className="flex flex-wrap gap-2">
-            <button onClick={() => { if (window.confirm("Reset viewed status on all homes?")) { const cleaned = homes.map(h => ({ ...h, viewed: false })); setHomes(cleaned); try { localStorage.setItem("cribs_homes", JSON.stringify(cleaned)); } catch {} } }}
-              className="text-xs font-medium text-violet-600 hover:text-violet-800 bg-violet-50 hover:bg-violet-100 px-3 py-1.5 rounded-lg border border-violet-200 transition-colors">Reset All Viewed</button>
+            <button onClick={() => { if (window.confirm("Reset toured status on all homes?")) { const cleaned = homes.map(h => ({ ...h, viewed: false })); setHomes(cleaned); try { localStorage.setItem("cribs_homes", JSON.stringify(cleaned)); } catch {} } }}
+              className="text-xs font-medium text-violet-600 hover:text-violet-800 bg-violet-50 hover:bg-violet-100 px-3 py-1.5 rounded-lg border border-violet-200 transition-colors">Reset All Toured</button>
             <button onClick={() => { if (window.confirm("Clear ALL enrichment data (flood, crime, school, parks, groceries) from every home?")) { const cleaned = homes.map(h => { const c = {...h}; delete c.flood; delete c.crime; delete c.school; delete c.parks; delete c.groceries; return c; }); setHomes(cleaned); try { localStorage.setItem("cribs_homes", JSON.stringify(cleaned)); } catch {} window.location.reload(); } }}
               className="text-xs font-medium text-stone-600 hover:text-stone-800 bg-stone-50 hover:bg-stone-100 px-3 py-1.5 rounded-lg border border-stone-200 transition-colors">Clear All Enrichment</button>
             <button onClick={() => { if (window.confirm("Clear parks data from all homes?")) { const cleaned = homes.map(h => { const c = {...h}; delete c.parks; return c; }); setHomes(cleaned); try { localStorage.setItem("cribs_homes", JSON.stringify(cleaned)); } catch {} window.location.reload(); } }}
@@ -5047,10 +5047,6 @@ export default function CribsApp() {
   const openHome = (hOrId, filteredList) => {
     let h = typeof hOrId === "string" ? homes.find(x => x.id === hOrId) : hOrId;
     if (!h) return;
-    if (!h.viewed) {
-      setHomes((prev) => prev.map((x) => x.id === h.id ? { ...x, viewed: true } : x));
-      h = { ...h, viewed: true };
-    }
     setActiveHome(h);
     if (filteredList) setNavList(filteredList.map(x => x.id));
     setScreen("detail");
@@ -5092,7 +5088,7 @@ export default function CribsApp() {
               <svg className="w-5 h-5" viewBox="0 0 24 24" fill="white"><path d="M12 3L2 12h3v8h5v-5h4v5h5v-8h3L12 3z"/></svg>
             </div>
             <h1 className="text-lg font-bold tracking-tight text-stone-800">CRIBS</h1>
-            <span className="text-[10px] text-stone-400 font-medium ml-1 self-end mb-0.5">v1.7.2</span>
+            <span className="text-[10px] text-stone-400 font-medium ml-1 self-end mb-0.5">v1.7.5</span>
             {SUPA_ENABLED && (
               <span title={cloudStatus === "synced" ? "Cloud sync active" : cloudStatus === "loading" ? "Syncing..." : cloudStatus === "error" ? "Cloud sync error — using local data" : "Cloud sync disabled"}
                 className={`w-2 h-2 rounded-full ml-1 self-end mb-1 flex-shrink-0 ${cloudStatus === "synced" ? "bg-emerald-400" : cloudStatus === "loading" ? "bg-amber-400 animate-pulse" : cloudStatus === "error" ? "bg-red-400" : "bg-stone-300"}`} />
