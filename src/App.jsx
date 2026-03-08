@@ -3334,18 +3334,76 @@ function getDateKey(d) { return d ? d.toLocaleDateString("en-US", { year: "numer
 // Nearest-neighbor TSP approximation for route optimization
 function optimizeRoute(stops) {
   if (stops.length <= 2) return stops;
-  const remaining = [...stops];
-  const route = [remaining.shift()]; // start with first
-  while (remaining.length > 0) {
+  
+  // Separate stops with OH times vs flexible stops
+  const withOH = stops.filter(h => h.ohStart).map(h => ({
+    ...h,
+    ohStartMin: h.ohStart.getHours() * 60 + h.ohStart.getMinutes(),
+    ohEndMin: h.ohEnd ? h.ohEnd.getHours() * 60 + h.ohEnd.getMinutes() : h.ohStart.getHours() * 60 + h.ohStart.getMinutes() + 60,
+  })).sort((a, b) => a.ohStartMin - b.ohStartMin);
+  const flexible = stops.filter(h => !h.ohStart);
+  
+  // If no OH-constrained stops, fall back to pure nearest-neighbor
+  if (withOH.length === 0) {
+    const remaining = [...stops];
+    const route = [remaining.shift()];
+    while (remaining.length > 0) {
+      const last = route[route.length - 1];
+      let bestIdx = 0, bestDist = Infinity;
+      for (let i = 0; i < remaining.length; i++) {
+        if (!last.lat || !remaining[i].lat) continue;
+        const d = haversine(last.lat, last.lng, remaining[i].lat, remaining[i].lng);
+        if (d < bestDist) { bestDist = d; bestIdx = i; }
+      }
+      route.push(remaining.splice(bestIdx, 1)[0]);
+    }
+    return route;
+  }
+  
+  // Time-aware: place OH stops in chronological order, insert flexible stops
+  // in gaps using nearest-neighbor to minimize driving
+  const route = [];
+  const remainingFlex = [...flexible];
+  
+  for (let t = 0; t < withOH.length; t++) {
+    // Before this OH stop, fill gap with nearest flexible stops
+    const prev = route.length > 0 ? route[route.length - 1] : null;
+    const nextOH = withOH[t];
+    
+    // Insert flexible stops that are close to prev or nextOH
+    while (remainingFlex.length > 0) {
+      const anchor = prev || nextOH;
+      if (!anchor.lat) break;
+      let bestIdx = -1, bestDist = Infinity;
+      for (let i = 0; i < remainingFlex.length; i++) {
+        if (!remainingFlex[i].lat) continue;
+        const d = haversine(anchor.lat, anchor.lng, remainingFlex[i].lat, remainingFlex[i].lng);
+        // Also check if inserting here keeps us closer to next OH
+        const dToNext = haversine(remainingFlex[i].lat, remainingFlex[i].lng, nextOH.lat, nextOH.lng);
+        const score = d + dToNext * 0.5; // bias toward staying near the route
+        if (score < bestDist) { bestDist = score; bestIdx = i; }
+      }
+      // Only insert if reasonably close (< 10 mi detour), otherwise save for later
+      if (bestIdx >= 0 && bestDist < 20) {
+        route.push(remainingFlex.splice(bestIdx, 1)[0]);
+      } else break;
+    }
+    
+    route.push(nextOH);
+  }
+  
+  // Append remaining flexible stops after last OH using nearest-neighbor
+  while (remainingFlex.length > 0) {
     const last = route[route.length - 1];
     let bestIdx = 0, bestDist = Infinity;
-    for (let i = 0; i < remaining.length; i++) {
-      if (!last.lat || !remaining[i].lat) continue;
-      const d = haversine(last.lat, last.lng, remaining[i].lat, remaining[i].lng);
+    for (let i = 0; i < remainingFlex.length; i++) {
+      if (!last.lat || !remainingFlex[i].lat) continue;
+      const d = haversine(last.lat, last.lng, remainingFlex[i].lat, remainingFlex[i].lng);
       if (d < bestDist) { bestDist = d; bestIdx = i; }
     }
-    route.push(remaining.splice(bestIdx, 1)[0]);
+    route.push(remainingFlex.splice(bestIdx, 1)[0]);
   }
+  
   return route;
 }
 
@@ -3486,7 +3544,13 @@ function TourPlannerScreen({ homes, onOpenHome, myHome }) {
   const autoOptimizeDay = (dayKey) => {
     setTourDays(prev => {
       const ids = prev[dayKey] || [];
-      const stops = ids.map(id => homes.find(h => h.id === id)).filter(Boolean);
+      const stops = ids.map(id => {
+        const h = homes.find(x => x.id === id);
+        if (!h) return null;
+        // Enrich with parsed OH times for time-aware optimization
+        const oh = upcomingOH.find(o => o.id === h.id);
+        return { ...h, ohStart: oh?.ohStart || parseOHDate(h.nextOpenHouseStart) || null, ohEnd: oh?.ohEnd || parseOHDate(h.nextOpenHouseEnd) || null };
+      }).filter(Boolean);
       const optimized = optimizeRoute(stops);
       return { ...prev, [dayKey]: optimized.map(h => h.id) };
     });
@@ -3724,6 +3788,7 @@ function TourPlannerScreen({ homes, onOpenHome, myHome }) {
                                     <p className="text-xs text-stone-400">{[h.city, h.zip].filter(Boolean).join(" ")}</p>
                                   </div>
                                   <div className="flex items-center gap-1 flex-shrink-0">
+                                    {h.url && <a href={h.url} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()} title="View on Redfin" className="text-stone-300 hover:text-red-500 transition-colors p-0.5"><svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6M15 3h6v6M10 14L21 3"/></svg></a>}
                                     {h.viewed && <span className="text-teal-500"><svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg></span>}
                                     {h.favorite && <span className="text-amber-400"><StarIcon filled className="w-4 h-4" /></span>}
                                     <button onClick={() => toggleHomeInDay(activeDayObj.key, h.id)} className="text-stone-300 hover:text-red-500 transition-colors p-0.5" title="Remove">
@@ -3809,9 +3874,10 @@ function TourPlannerScreen({ homes, onOpenHome, myHome }) {
                             {h.yearBuilt > 0 && <span className="text-[10px] text-stone-400">'{String(h.yearBuilt).slice(2)}</span>}
                           </div>
                         </div>
-                        <div className="text-right flex-shrink-0">
+                        <div className="text-right flex-shrink-0 flex flex-col items-end gap-1">
                           {h.price > 0 && <div className="text-sm font-bold text-stone-700">{fmtShort(h.price)}</div>}
                           {h.ppsf > 0 && <div className="text-[10px] text-stone-400">${h.ppsf}/sf</div>}
+                          {h.url && <a href={h.url} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()} title="View on Redfin" className="text-stone-300 hover:text-red-500 transition-colors"><svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6M15 3h6v6M10 14L21 3"/></svg></a>}
                         </div>
                       </div>
                     ))}
@@ -3885,6 +3951,7 @@ function TourPlannerScreen({ homes, onOpenHome, myHome }) {
                             {hasOH && <span className="text-[9px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-1 py-0 rounded">OH {ohD ? formatOHTime(ohD) : ""}</span>}
                             {h.status && h.status.toLowerCase().includes("new") && <span className="text-[9px] font-bold text-sky-600 bg-sky-50 border border-sky-200 px-1 py-0 rounded">New</span>}
                             {h.school?.rating && <span className="text-[9px] text-stone-400">🏫 {h.school.rating}/10</span>}
+                            {h.url && <a href={h.url} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()} title="View on Redfin" className="text-stone-300 hover:text-red-500 transition-colors"><svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6M15 3h6v6M10 14L21 3"/></svg></a>}
                           </div>
                         </div>
                       </div>
@@ -5146,7 +5213,7 @@ export default function CribsApp() {
               <svg className="w-5 h-5" viewBox="0 0 24 24" fill="white"><path d="M12 3L2 12h3v8h5v-5h4v5h5v-8h3L12 3z"/></svg>
             </div>
             <h1 className="text-lg font-bold tracking-tight text-stone-800">CRIBS</h1>
-            <span className="text-[10px] text-stone-400 font-medium ml-1 self-end mb-0.5">v1.8.2</span>
+            <span className="text-[10px] text-stone-400 font-medium ml-1 self-end mb-0.5">v1.8.4</span>
             {SUPA_ENABLED && (
               <span title={cloudStatus === "synced" ? "Cloud sync active" : cloudStatus === "loading" ? "Syncing..." : cloudStatus === "error" ? "Cloud sync error — using local data" : "Cloud sync disabled"}
                 className={`w-2 h-2 rounded-full ml-1 self-end mb-1 flex-shrink-0 ${cloudStatus === "synced" ? "bg-emerald-400" : cloudStatus === "loading" ? "bg-amber-400 animate-pulse" : cloudStatus === "error" ? "bg-red-400" : "bg-stone-300"}`} />
