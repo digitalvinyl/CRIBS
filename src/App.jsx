@@ -3335,17 +3335,45 @@ function getDateKey(d) { return d ? d.toLocaleDateString("en-US", { year: "numer
 function optimizeRoute(stops) {
   if (stops.length <= 2) return stops;
   
-  // Separate stops with OH times vs flexible stops
-  const withOH = stops.filter(h => h.ohStart).map(h => ({
-    ...h,
-    ohStartMin: h.ohStart.getHours() * 60 + h.ohStart.getMinutes(),
-    ohEndMin: h.ohEnd ? h.ohEnd.getHours() * 60 + h.ohEnd.getMinutes() : h.ohStart.getHours() * 60 + h.ohStart.getMinutes() + 60,
-  })).sort((a, b) => a.ohStartMin - b.ohStartMin);
+  // Group stops by whether they have tight OH windows that MUST be respected
+  // "Tight" = OH window is < 2 hours and doesn't overlap with most others
+  const withOH = stops.filter(h => h.ohStart);
   const flexible = stops.filter(h => !h.ohStart);
   
-  // If no OH-constrained stops, fall back to pure nearest-neighbor
-  if (withOH.length === 0) {
-    const remaining = [...stops];
+  // Check if OH times are all similar (within ~2 hours of each other) — if so, treat as flexible
+  // because the time ordering doesn't matter much and distance should dominate
+  let ohEffective = [];
+  if (withOH.length >= 2) {
+    const mins = withOH.map(h => h.ohStart.getHours() * 60 + h.ohStart.getMinutes()).sort((a, b) => a - b);
+    const spread = mins[mins.length - 1] - mins[0];
+    if (spread <= 120) {
+      // All OH times are within 2 hours — treat them all as flexible, optimize by distance
+      ohEffective = [];
+    } else {
+      // Significant time spread — group into time slots and order slots chronologically
+      // Within each slot, optimize by distance
+      const slots = [];
+      const sorted = [...withOH].sort((a, b) => (a.ohStart.getHours() * 60 + a.ohStart.getMinutes()) - (b.ohStart.getHours() * 60 + b.ohStart.getMinutes()));
+      let currentSlot = [sorted[0]];
+      for (let i = 1; i < sorted.length; i++) {
+        const prevMin = sorted[i-1].ohStart.getHours() * 60 + sorted[i-1].ohStart.getMinutes();
+        const curMin = sorted[i].ohStart.getHours() * 60 + sorted[i].ohStart.getMinutes();
+        if (curMin - prevMin <= 90) {
+          currentSlot.push(sorted[i]); // same time slot
+        } else {
+          slots.push(currentSlot);
+          currentSlot = [sorted[i]];
+        }
+      }
+      slots.push(currentSlot);
+      ohEffective = slots; // array of arrays, each sorted by time
+    }
+  }
+  
+  // Pure nearest-neighbor from a starting point
+  const nearestNeighbor = (stopsToRoute) => {
+    if (stopsToRoute.length <= 1) return stopsToRoute;
+    const remaining = [...stopsToRoute];
     const route = [remaining.shift()];
     while (remaining.length > 0) {
       const last = route[route.length - 1];
@@ -3358,50 +3386,67 @@ function optimizeRoute(stops) {
       route.push(remaining.splice(bestIdx, 1)[0]);
     }
     return route;
+  };
+  
+  if (ohEffective.length === 0) {
+    // No meaningful time constraints — pure distance optimization
+    return nearestNeighbor(stops);
   }
   
-  // Time-aware: place OH stops in chronological order, insert flexible stops
-  // in gaps using nearest-neighbor to minimize driving
+  // Time-constrained: process each time slot with nearest-neighbor internally,
+  // then connect slots, inserting flexible stops in between
   const route = [];
-  const remainingFlex = [...flexible];
+  const slottedIds = new Set(ohEffective.flat().map(h => h.id));
+  const remainingFlex = [...flexible, ...withOH.filter(h => !slottedIds.has(h.id))];
   
-  for (let t = 0; t < withOH.length; t++) {
-    // Before this OH stop, fill gap with nearest flexible stops
-    const prev = route.length > 0 ? route[route.length - 1] : null;
-    const nextOH = withOH[t];
-    
-    // Insert flexible stops that are close to prev or nextOH
-    while (remainingFlex.length > 0) {
-      const anchor = prev || nextOH;
-      if (!anchor.lat) break;
-      let bestIdx = -1, bestDist = Infinity;
-      for (let i = 0; i < remainingFlex.length; i++) {
-        if (!remainingFlex[i].lat) continue;
-        const d = haversine(anchor.lat, anchor.lng, remainingFlex[i].lat, remainingFlex[i].lng);
-        // Also check if inserting here keeps us closer to next OH
-        const dToNext = haversine(remainingFlex[i].lat, remainingFlex[i].lng, nextOH.lat, nextOH.lng);
-        const score = d + dToNext * 0.5; // bias toward staying near the route
-        if (score < bestDist) { bestDist = score; bestIdx = i; }
+  for (let s = 0; s < ohEffective.length; s++) {
+    // Insert any flexible stops that are geographically between the last route point and this slot
+    if (remainingFlex.length > 0 && route.length > 0) {
+      const last = route[route.length - 1];
+      const slotCenter = ohEffective[s][0]; // first stop of next slot as target
+      if (last.lat && slotCenter.lat) {
+        // Find flex stops that are "on the way" (closer to both endpoints than a direct trip)
+        const directDist = haversine(last.lat, last.lng, slotCenter.lat, slotCenter.lng);
+        const onTheWay = [];
+        for (let i = remainingFlex.length - 1; i >= 0; i--) {
+          const f = remainingFlex[i];
+          if (!f.lat) continue;
+          const dFromLast = haversine(last.lat, last.lng, f.lat, f.lng);
+          const dToNext = haversine(f.lat, f.lng, slotCenter.lat, slotCenter.lng);
+          // "On the way" if detour is less than 50% extra distance
+          if (dFromLast + dToNext < directDist * 1.5) {
+            onTheWay.push({ idx: i, f, dFromLast });
+          }
+        }
+        // Insert on-the-way stops sorted by distance from last
+        onTheWay.sort((a, b) => a.dFromLast - b.dFromLast);
+        // Remove from remainingFlex by collecting IDs first (splice indices shift)
+        const onTheWayIds = new Set(onTheWay.map(item => item.f.id));
+        const toInsert = onTheWay.map(item => item.f);
+        for (let i = remainingFlex.length - 1; i >= 0; i--) {
+          if (onTheWayIds.has(remainingFlex[i].id)) remainingFlex.splice(i, 1);
+        }
+        route.push(...toInsert);
       }
-      // Only insert if reasonably close (< 10 mi detour), otherwise save for later
-      if (bestIdx >= 0 && bestDist < 20) {
-        route.push(remainingFlex.splice(bestIdx, 1)[0]);
-      } else break;
     }
     
-    route.push(nextOH);
+    // Optimize this time slot by distance and append
+    const slotOptimized = nearestNeighbor(ohEffective[s]);
+    route.push(...slotOptimized);
   }
   
-  // Append remaining flexible stops after last OH using nearest-neighbor
-  while (remainingFlex.length > 0) {
-    const last = route[route.length - 1];
-    let bestIdx = 0, bestDist = Infinity;
-    for (let i = 0; i < remainingFlex.length; i++) {
-      if (!last.lat || !remainingFlex[i].lat) continue;
-      const d = haversine(last.lat, last.lng, remainingFlex[i].lat, remainingFlex[i].lng);
-      if (d < bestDist) { bestDist = d; bestIdx = i; }
+  // Append remaining flexible stops using nearest-neighbor from last position
+  if (remainingFlex.length > 0) {
+    const tail = nearestNeighbor(remainingFlex);
+    // Connect tail to end of route using nearest-neighbor from last route stop
+    if (route.length > 0 && tail.length > 0) {
+      const last = route[route.length - 1];
+      // Re-sort tail starting from nearest to last route stop
+      const reSorted = nearestNeighbor([{ ...last, _anchor: true }, ...tail]).filter(h => !h._anchor);
+      route.push(...reSorted);
+    } else {
+      route.push(...tail);
     }
-    route.push(remainingFlex.splice(bestIdx, 1)[0]);
   }
   
   return route;
@@ -5220,7 +5265,7 @@ export default function CribsApp() {
               <svg className="w-5 h-5" viewBox="0 0 24 24" fill="white"><path d="M12 3L2 12h3v8h5v-5h4v5h5v-8h3L12 3z"/></svg>
             </div>
             <h1 className="text-lg font-bold tracking-tight text-stone-800">CRIBS</h1>
-            <span className="text-[10px] text-stone-400 font-medium ml-1 self-end mb-0.5">v1.8.5</span>
+            <span className="text-[10px] text-stone-400 font-medium ml-1 self-end mb-0.5">v1.8.6</span>
             {SUPA_ENABLED && (
               <span title={cloudStatus === "synced" ? "Cloud sync active" : cloudStatus === "loading" ? "Syncing..." : cloudStatus === "error" ? "Cloud sync error — using local data" : "Cloud sync disabled"}
                 className={`w-2 h-2 rounded-full ml-1 self-end mb-1 flex-shrink-0 ${cloudStatus === "synced" ? "bg-emerald-400" : cloudStatus === "loading" ? "bg-amber-400 animate-pulse" : cloudStatus === "error" ? "bg-red-400" : "bg-stone-300"}`} />
